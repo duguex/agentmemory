@@ -1,5 +1,8 @@
 {
   "name": "agentmemory-omp-extension",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "typebox": "^1.3.2"
+  }
 }

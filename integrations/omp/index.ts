@@ -24,6 +24,17 @@ function secret(): string {
 	return process.env.AGENTMEMORY_SECRET ?? "";
 }
 
+// Warn if sending bearer token over plaintext HTTP (P2-015)
+function maybeWarnPlaintextBearer(): void {
+	const url = process.env.AGENTMEMORY_URL ?? "";
+	if (!url.startsWith("http://")) return;
+	if (!process.env.AGENTMEMORY_SECRET) return;
+	if (url.includes("localhost") || url.includes("127.0.0.1") || url.includes("::1")) return;
+	console.warn("[agentmemory] Sending bearer token over plaintext HTTP to " + url + ". Use https:// in production.");
+}
+
+maybeWarnPlaintextBearer();
+
 function authHeaders(): Record<string, string> {
 	const h: Record<string, string> = { "Content-Type": "application/json" };
 	const s = secret();
@@ -60,8 +71,17 @@ async function apiGet<T>(path: string): Promise<T | null> {
 	}
 }
 
+// P2-014: handle max<=0 and UTF-16 surrogate pairs
 function truncate(s: string, max: number): string {
-	return s.length <= max ? s : s.slice(0, max) + "...";
+	if (max <= 0) return "";
+	if (s.length <= max) return s;
+	let end = max;
+	while (end > 0 && end < s.length) {
+		const code = s.charCodeAt(end);
+		if (code >= 0xdc00 && code <= 0xdfff) { end--; continue; }
+		break;
+	}
+	return s.slice(0, end) + "...";
 }
 
 function getText(content: unknown): string {
@@ -79,12 +99,17 @@ function getText(content: unknown): string {
 		.trim();
 }
 
+function isInjectContextEnabled(): boolean {
+	return process.env.AGENTMEMORY_INJECT_CONTEXT === "true";
+}
+
 // ── Extension factory ─────────────────────────────────────────────
 
 export default function agentmemoryExtension(pi: ExtensionAPI) {
 	let sessionId = `auto-${Date.now().toString(36)}`;
 	let currentProject = process.cwd();
 	let serverOk = false;
+	let sessionInjected = false;
 
 	// ── Tools ───────────────────────────────────────────────────
 
@@ -143,18 +168,14 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	});
 
 	// ── Session lifecycle hooks ─────────────────────────────────
-	let sessionInjected = false;
-
-	// ── Session lifecycle hooks ─────────────────────────────────
 
 	pi.on("session_start", async () => {
 		sessionId = `auto-${Date.now().toString(36)}`;
 		currentProject = process.cwd();
 		sessionInjected = false;
+		// P1-011: single HTTP call, no separate health check
 		const result = await apiPost("session/start", { sessionId, project: currentProject, cwd: currentProject });
 		serverOk = result !== null;
-		const health = await apiGet("health");
-		serverOk = health !== null;
 	});
 
 	// ── User prompt capture ────────────────────────────────────
@@ -176,7 +197,6 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 			data: { tool_name: "user_prompt", tool_input: truncate(text, 2000) },
 		});
 	});
-
 
 	// ── Subagent tracking ─────────────────────────────────────
 
@@ -206,10 +226,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		});
 	});
 
-	// ── Session shutdown ──────────────────────────────────────
+	// ── Session shutdown (always fires, even if server was down) ─
 
 	pi.on("session_shutdown", async () => {
-		if (!serverOk) return;
 		void apiPost("session/end", { sessionId, reason: "shutdown" });
 	});
 
@@ -229,24 +248,27 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		});
 	});
 
+	// P1-008: check isError to distinguish success/failure
 	pi.on("tool_execution_end", async (event: unknown) => {
 		if (!serverOk || !event || typeof event !== "object") return;
 		const toolName = "toolName" in event ? String(event.toolName) : "unknown";
 		const toolResult = "result" in event ? JSON.stringify(event.result) : "";
+		const isError = "isError" in event ? !!event.isError : false;
 		void apiPost("observe", {
-			hookType: "post_tool_use",
+			hookType: isError ? "post_tool_failure" : "post_tool_use",
 			sessionId,
 			project: currentProject,
 			cwd: currentProject,
 			timestamp: new Date().toISOString(),
-			data: { tool_name: toolName, tool_output: truncate(toolResult, 2000) },
+			data: { tool_name: toolName, tool_output: truncate(toolResult, 2000), error: isError || undefined },
 		});
 	});
 
-	// ── Memory injection via before_agent_start ───────────────
+	// ── Memory injection via before_agent_start (P1-006: gated by AGENTMEMORY_INJECT_CONTEXT) ─
 
 	pi.on("before_agent_start", async (event: unknown) => {
 		if (!serverOk || sessionInjected || !event || typeof event !== "object") return;
+		if (!isInjectContextEnabled()) return;
 		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) return;
 		sessionInjected = true;
 		const result = await apiPost<{ results?: Array<{ title?: string; type?: string; narrative?: string }> }>(
@@ -264,18 +286,20 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		return { systemPrompt: recallBlock };
 	});
 
-	// ── Turn capture ───────────────────────────────────────────
+	// ── Turn capture (P1-009: hookType = "notification", not "post_tool_use") ──
 
 	pi.on("turn_end", async (event: unknown) => {
 		if (!serverOk || !event || typeof event !== "object") return;
 		if (!("messages" in event) || !Array.isArray(event.messages)) return;
-		for (const msg of [...event.messages].reverse()) {
+		// P2-013: iterate in-place instead of cloning the array
+		for (let i = event.messages.length - 1; i >= 0; i--) {
+			const msg = event.messages[i];
 			if (!msg || typeof msg !== "object") continue;
 			if (!("role" in msg) || msg.role !== "assistant") continue;
 			const text = getText("content" in msg ? msg.content : "");
 			if (!text) break;
 			void apiPost("observe", {
-				hookType: "post_tool_use",
+				hookType: "notification",
 				sessionId,
 				project: currentProject,
 				cwd: currentProject,
@@ -286,7 +310,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Session end (session_shutdown is the primary close) ──
+	// ── Session end (session_shutdown already sends session/end) ──
 
 	pi.on("agent_end", async () => {
 		// no-op: session/end is sent by session_shutdown
