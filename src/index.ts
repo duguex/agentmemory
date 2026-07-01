@@ -261,28 +261,21 @@ async function main() {
   registerEnrichFunction(sdk, kv);
 
   // ── Periodic cleanup schedules ─────────────────────────────
-  const autoForgetInterval = getAutoForgetIntervalMs();
-  if (autoForgetInterval > 0) {
-    bootLog(`Auto-forget: scheduled every ${autoForgetInterval}ms`);
-    setInterval(() => {
-      sdk.trigger({
-        function_id: "mem::auto-forget",
-        payload: { dryRun: false },
-        action: "void",
-      }).catch(() => {});
-    }, autoForgetInterval);
+  const _cleanupTimers: ReturnType<typeof setInterval>[] = [];
+  const autoForgetMs = getAutoForgetIntervalMs();
+  if (autoForgetMs > 0) {
+    bootLog(`Auto-forget: scheduled every ${autoForgetMs}ms`);
+    _cleanupTimers.push(setInterval(() => {
+      sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false }, action: "void" }).catch(() => {});
+    }, autoForgetMs));
   }
 
-  const evictInterval = getEvictIntervalMs();
-  if (evictInterval > 0) {
-    bootLog(`Eviction: scheduled every ${evictInterval}ms`);
-    setInterval(() => {
-      sdk.trigger({
-        function_id: "mem::evict",
-        payload: {},
-        action: "void",
-      }).catch(() => {});
-    }, evictInterval);
+  const evictMs = getEvictIntervalMs();
+  if (evictMs > 0) {
+    bootLog(`Eviction: scheduled every ${evictMs}ms`);
+    _cleanupTimers.push(setInterval(() => {
+      sdk.trigger({ function_id: "mem::evict", payload: {}, action: "void" }).catch(() => {});
+    }, evictMs));
   }
 
   const claudeBridgeConfig = loadClaudeBridgeConfig();
