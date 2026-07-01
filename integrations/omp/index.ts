@@ -177,46 +177,6 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		});
 	});
 
-	// ── Tool result (includes failures) ────────────────────────
-
-	pi.on("tool_result", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
-		const toolName = "toolName" in event ? String(event.toolName) : "unknown";
-		const toolResult = "result" in event ? JSON.stringify(event.result) : "";
-		const isError = "isError" in event ? !!event.isError : false;
-		void apiPost("observe", {
-			hookType: isError ? "post_tool_failure" : "post_tool_use",
-			sessionId,
-			project: currentProject,
-			cwd: currentProject,
-			timestamp: new Date().toISOString(),
-			data: {
-				tool_name: toolName,
-				tool_output: truncate(toolResult, 2000),
-				error: isError ? true : undefined,
-			},
-		});
-	});
-
-	// ── Context injection ─────────────────────────────────────
-
-
-	// ── Message end (notifications, assistant responses) ───────
-
-	pi.on("message_end", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
-		if (!("role" in event) || event.role !== "assistant") return;
-		const text = getText("content" in event ? event.content : "");
-		if (!text) return;
-		void apiPost("observe", {
-			hookType: "notification",
-			sessionId,
-			project: currentProject,
-			cwd: currentProject,
-			timestamp: new Date().toISOString(),
-			data: { tool_name: "assistant_response", tool_output: truncate(text, 4000) },
-		});
-	});
 
 	// ── Subagent tracking ─────────────────────────────────────
 
@@ -326,10 +286,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Session end ─────────────────────────────────────────────
+	// ── Session end (session_shutdown is the primary close) ──
 
 	pi.on("agent_end", async () => {
-		if (!serverOk) return;
-		void apiPost("session/end", { sessionId });
+		// no-op: session/end is sent by session_shutdown
 	});
 }
