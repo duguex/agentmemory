@@ -153,6 +153,18 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
   };
 }
 
+export function getAutoForgetIntervalMs(): number {
+	const val = getEnvVar("AGENTMEMORY_AUTO_FORGET_INTERVAL") || "";
+	const parsed = parseInt(val, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export function getEvictIntervalMs(): number {
+	const val = getEnvVar("AGENTMEMORY_EVICT_INTERVAL") || "";
+	const parsed = parseInt(val, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export function loadConfig(): AgentMemoryConfig {
   const env = getMergedEnv();
 

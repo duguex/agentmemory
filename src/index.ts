@@ -12,6 +12,8 @@ import {
   isConsolidationEnabled,
   isContextInjectionEnabled,
   isDropStaleIndexEnabled,
+  getAutoForgetIntervalMs,
+  getEvictIntervalMs,
 } from "./config.js";
 import {
   createProvider,
@@ -258,18 +260,32 @@ async function main() {
   registerExportImportFunction(sdk, kv);
   registerEnrichFunction(sdk, kv);
 
-  const claudeBridgeConfig = loadClaudeBridgeConfig();
-  if (claudeBridgeConfig.enabled) {
-    registerClaudeBridgeFunction(sdk, kv, claudeBridgeConfig);
-    bootLog(
-      `Claude bridge: syncing to ${claudeBridgeConfig.memoryFilePath}`,
-    );
+  // ── Periodic cleanup schedules ─────────────────────────────
+  const autoForgetInterval = getAutoForgetIntervalMs();
+  if (autoForgetInterval > 0) {
+    bootLog(`Auto-forget: scheduled every ${autoForgetInterval}ms`);
+    setInterval(() => {
+      sdk.trigger({
+        function_id: "mem::auto-forget",
+        payload: { dryRun: false },
+        action: "void",
+      }).catch(() => {});
+    }, autoForgetInterval);
   }
 
-  if (isGraphExtractionEnabled()) {
-    registerGraphFunction(sdk, kv, provider);
-    bootLog(`Knowledge graph: extraction enabled`);
+  const evictInterval = getEvictIntervalMs();
+  if (evictInterval > 0) {
+    bootLog(`Eviction: scheduled every ${evictInterval}ms`);
+    setInterval(() => {
+      sdk.trigger({
+        function_id: "mem::evict",
+        payload: {},
+        action: "void",
+      }).catch(() => {});
+    }, evictInterval);
   }
+
+  const claudeBridgeConfig = loadClaudeBridgeConfig();
 
   registerConsolidationPipelineFunction(sdk, kv, provider);
   bootLog(`Consolidation pipeline: registered (CONSOLIDATION_ENABLED=${isConsolidationEnabled() ? "true" : "false"})`);
