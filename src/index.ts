@@ -4,10 +4,8 @@ import {
   getEnvVar,
   loadEmbeddingConfig,
   loadFallbackConfig,
-  loadClaudeBridgeConfig,
   loadTeamConfig,
   loadSnapshotConfig,
-  isGraphExtractionEnabled,
   isAutoCompressEnabled,
   isConsolidationEnabled,
   isContextInjectionEnabled,
@@ -57,9 +55,7 @@ import { registerProfileFunction } from "./functions/profile.js";
 import { registerAutoForgetFunction } from "./functions/auto-forget.js";
 import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
-import { registerClaudeBridgeFunction } from "./functions/claude-bridge.js";
-import { registerGraphFunction } from "./functions/graph.js";
-import { registerConsolidationPipelineFunction } from "./functions/consolidation-pipeline.js";
+
 import { registerTeamFunction } from "./functions/team.js";
 import { registerGovernanceFunction } from "./functions/governance.js";
 import { registerSnapshotFunction } from "./functions/snapshot.js";
@@ -278,7 +274,6 @@ async function main() {
     }, evictMs));
   }
 
-  const claudeBridgeConfig = loadClaudeBridgeConfig();
 
   registerConsolidationPipelineFunction(sdk, kv, provider);
   bootLog(`Consolidation pipeline: registered (CONSOLIDATION_ENABLED=${isConsolidationEnabled() ? "true" : "false"})`);
@@ -599,6 +594,8 @@ async function main() {
   }
 
   const shutdown = async () => {
+    // Clear periodic cleanup timers on shutdown
+    for (const timer of _cleanupTimers) clearInterval(timer);
     console.log(`\n[agentmemory] Shutting down...`);
     healthMonitor.stop();
     dedupMap.stop();

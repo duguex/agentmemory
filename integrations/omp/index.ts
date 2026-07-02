@@ -106,6 +106,8 @@ function isInjectContextEnabled(): boolean {
 // ── Extension factory ─────────────────────────────────────────────
 
 export default function agentmemoryExtension(pi: ExtensionAPI) {
+	// Prevent recursive observation in subagents that inherit this extension
+	if (process.env.AGENTMEMORY_SDK_CHILD === "1") return;
 	let sessionId = `auto-${Date.now().toString(36)}`;
 	let currentProject = process.cwd();
 	let serverOk = false;
@@ -194,7 +196,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 			project: currentProject,
 			cwd: currentProject,
 			timestamp: new Date().toISOString(),
-			data: { tool_name: "user_prompt", tool_input: truncate(text, 2000) },
+			data: { tool_name: "user_prompt", tool_input: truncate(text, 2000), prompt: truncate(text, 500) },
 		});
 	});
 
@@ -229,7 +231,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Session shutdown (always fires, even if server was down) ─
 
 	pi.on("session_shutdown", async () => {
-		void apiPost("session/end", { sessionId, reason: "shutdown" });
+		await apiPost("session/end", { sessionId, reason: "shutdown" });
 	});
 
 	// ── Tool execution capture ──────────────────────────────────
@@ -270,11 +272,11 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		if (!serverOk || sessionInjected || !event || typeof event !== "object") return;
 		if (!isInjectContextEnabled()) return;
 		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) return;
-		sessionInjected = true;
 		const result = await apiPost<{ results?: Array<{ title?: string; type?: string; narrative?: string }> }>(
 			"smart-search",
 			{ query: event.prompt, limit: 5 },
 		);
+		sessionInjected = true;
 		if (!result?.results?.length) return;
 		const lines = result.results.map(
 			(r) => `  [${r.type ?? "memory"}] ${r.title ?? ""}${r.narrative ? ` — ${r.narrative}` : ""}`,
