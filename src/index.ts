@@ -55,6 +55,7 @@ import { registerProfileFunction } from "./functions/profile.js";
 import { registerAutoForgetFunction } from "./functions/auto-forget.js";
 import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
+import { registerConsolidationPipelineFunction } from "./functions/consolidation-pipeline.js";
 
 import { registerTeamFunction } from "./functions/team.js";
 import { registerGovernanceFunction } from "./functions/governance.js";

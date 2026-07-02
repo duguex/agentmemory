@@ -47,7 +47,7 @@ function authHeaders(): Record<string, string> {
 async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 	try {
 		const base = baseUrl().replace(/\/+$/, "");
-		const prefix = base.includes("/agentmemory") ? "" : "/agentmemory/";
+		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "POST",
@@ -65,7 +65,7 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 async function apiGet<T>(path: string): Promise<T | null> {
 	try {
 		const base = baseUrl().replace(/\/+$/, "");
-		const prefix = base.includes("/agentmemory") ? "" : "/agentmemory/";
+		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "GET",
