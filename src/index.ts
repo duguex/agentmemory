@@ -275,8 +275,12 @@ async function main() {
   }
 
 
-  registerConsolidationPipelineFunction(sdk, kv, provider);
-  bootLog(`Consolidation pipeline: registered (CONSOLIDATION_ENABLED=${isConsolidationEnabled() ? "true" : "false"})`);
+  if (isConsolidationEnabled()) {
+    registerConsolidationPipelineFunction(sdk, kv, provider);
+    bootLog(`Consolidation pipeline: registered`);
+  } else {
+    bootLog(`Consolidation pipeline: disabled (CONSOLIDATION_ENABLED=false)`);
+  }
 
   if (isAutoCompressEnabled()) {
     bootLog(
