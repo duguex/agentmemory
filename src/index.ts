@@ -556,6 +556,7 @@ async function main() {
       } catch {}
     }, autoForgetIntervalMs);
     autoForgetTimer.unref();
+    _cleanupTimers.push(autoForgetTimer);
     bootLog(`Auto-forget: enabled (every ${autoForgetIntervalMs / 60000}m)`);
   }
 
@@ -566,6 +567,7 @@ async function main() {
       } catch {}
     }, 86400000);
     lessonDecayTimer.unref();
+    _cleanupTimers.push(lessonDecayTimer);
     bootLog(`Lesson decay sweep: enabled (every 24h)`);
   }
 
@@ -576,6 +578,7 @@ async function main() {
       } catch {}
     }, 86400000);
     insightDecayTimer.unref();
+    _cleanupTimers.push(insightDecayTimer);
   }
 
   // #771: hourly TTL sweep for the followup-rate diagnostic. The
@@ -591,6 +594,7 @@ async function main() {
     } catch {}
   }, 60 * 60 * 1000);
   recentSearchesSweepTimer.unref();
+  _cleanupTimers.push(recentSearchesSweepTimer);
 
   if (isConsolidationEnabled()) {
     const consolidationTimer = setInterval(async () => {
@@ -599,6 +603,7 @@ async function main() {
       } catch {}
     }, consolidationIntervalMs);
     consolidationTimer.unref();
+    _cleanupTimers.push(consolidationTimer);
     bootLog(`Auto-consolidation: enabled (every ${consolidationIntervalMs / 60000}m)`);
   }
 
