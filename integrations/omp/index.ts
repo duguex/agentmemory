@@ -30,6 +30,8 @@ function maybeWarnPlaintextBearer(): void {
 	if (!url.startsWith("http://")) return;
 	if (!process.env.AGENTMEMORY_SECRET) return;
 	if (url.includes("localhost") || url.includes("127.0.0.1") || url.includes("::1")) return;
+	// Also allow private network IPs over plaintext (same security boundary)
+	if (url.match(/https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/)) return;
 	console.warn("[agentmemory] Sending bearer token over plaintext HTTP to " + url + ". Use https:// in production.");
 }
 
@@ -44,11 +46,14 @@ function authHeaders(): Record<string, string> {
 
 async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 	try {
-		const url = `${baseUrl().replace(/\/+$/, "")}/agentmemory/${path}`;
+		const base = baseUrl().replace(/\/+$/, "");
+		const prefix = base.includes("/agentmemory") ? "" : "/agentmemory/";
+		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "POST",
 			headers: authHeaders(),
 			body: body !== undefined ? JSON.stringify(body) : undefined,
+			signal: AbortSignal.timeout(3000),
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as T;
@@ -59,10 +64,13 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 
 async function apiGet<T>(path: string): Promise<T | null> {
 	try {
-		const url = `${baseUrl().replace(/\/+$/, "")}/agentmemory/${path}`;
+		const base = baseUrl().replace(/\/+$/, "");
+		const prefix = base.includes("/agentmemory") ? "" : "/agentmemory/";
+		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "GET",
 			headers: authHeaders(),
+			signal: AbortSignal.timeout(3000),
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as T;
@@ -105,9 +113,13 @@ function isInjectContextEnabled(): boolean {
 
 // ── Extension factory ─────────────────────────────────────────────
 
+function isSdkChild(): boolean {
+	return process.env.AGENTMEMORY_SDK_CHILD === "1";
+}
+
 export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// Prevent recursive observation in subagents that inherit this extension
-	if (process.env.AGENTMEMORY_SDK_CHILD === "1") return;
+	if (isSdkChild()) return;
 	let sessionId = `auto-${Date.now().toString(36)}`;
 	let currentProject = process.cwd();
 	let serverOk = false;
@@ -231,14 +243,20 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Session shutdown (always fires, even if server was down) ─
 
 	pi.on("session_shutdown", async () => {
-		await apiPost("session/end", { sessionId, reason: "shutdown" });
+		const { promise, resolve } = Promise.withResolvers<void>();
+		setTimeout(resolve, 3000);
+		await Promise.race([
+			apiPost("session/end", { sessionId, reason: "shutdown" }),
+			promise,
+		]);
 	});
 
 	// ── Tool execution capture ──────────────────────────────────
 
 	pi.on("tool_execution_start", async (event: unknown) => {
 		if (!serverOk || !event || typeof event !== "object") return;
-		const toolName = "toolName" in event ? String(event.toolName) : "unknown";
+		const rawName = "toolName" in event ? event.toolName : undefined;
+		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
 		const toolInput = "input" in event ? JSON.stringify(event.input) : "";
 		void apiPost("observe", {
 			hookType: "pre_tool_use",
@@ -253,7 +271,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// P1-008: check isError to distinguish success/failure
 	pi.on("tool_execution_end", async (event: unknown) => {
 		if (!serverOk || !event || typeof event !== "object") return;
-		const toolName = "toolName" in event ? String(event.toolName) : "unknown";
+		const rawName = "toolName" in event ? event.toolName : undefined;
+		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
 		const toolResult = "result" in event ? JSON.stringify(event.result) : "";
 		const isError = "isError" in event ? !!event.isError : false;
 		void apiPost("observe", {
@@ -273,11 +292,11 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		if (!isInjectContextEnabled()) return;
 		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) return;
 		const result = await apiPost<{ results?: Array<{ title?: string; type?: string; narrative?: string }> }>(
-			"smart-search",
-			{ query: event.prompt, limit: 5 },
+			"search",
+			{ query: event.prompt, limit: 5, format: "narrative" },
 		);
-		sessionInjected = true;
 		if (!result?.results?.length) return;
+		sessionInjected = true;
 		const lines = result.results.map(
 			(r) => `  [${r.type ?? "memory"}] ${r.title ?? ""}${r.narrative ? ` — ${r.narrative}` : ""}`,
 		);
