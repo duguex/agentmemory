@@ -263,7 +263,7 @@ async function main() {
     bootLog(`Auto-forget: scheduled every ${autoForgetMs}ms`);
     _cleanupTimers.push(setInterval(() => {
       sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false }, action: TriggerAction.Void() }).catch(() => {});
-    }, autoForgetMs));
+    }, autoForgetMs).unref());
   }
 
   const evictMs = getEvictIntervalMs();
@@ -271,7 +271,7 @@ async function main() {
     bootLog(`Eviction: scheduled every ${evictMs}ms`);
     _cleanupTimers.push(setInterval(() => {
       sdk.trigger({ function_id: "mem::evict", payload: {}, action: TriggerAction.Void() }).catch(() => {});
-    }, evictMs));
+    }, evictMs).unref());
   }
 
 
