@@ -79,6 +79,7 @@ export function registerSmartSearchFunction(
 ): void {
   sdk.registerFunction("mem::smart-search",
     async (data: {
+      format?: string;
       query?: string;
       expandIds?: Array<string | { obsId: string; sessionId: string }>;
       limit?: number;
@@ -173,7 +174,33 @@ export function registerSmartSearchFunction(
           filteredOutOfScope: expanded.length - scoped.length,
           truncated,
         });
-        return { mode: "expanded", results: scoped, truncated };
+        const expandedFormat = typeof data.format === "string" ? data.format : "full";
+        if (expandedFormat === "compact") {
+          const compactResults = scoped.map((r) => ({
+            obsId: r.obsId,
+            sessionId: r.sessionId,
+            title: r.observation.title,
+            type: r.observation.type,
+            score: undefined,
+            timestamp: r.observation.timestamp,
+          }));
+          return { mode: "expanded", format: "compact", results: compactResults, truncated };
+        }
+        if (expandedFormat === "narrative") {
+          const narrativeResults = scoped.map((r) => ({
+            obsId: r.obsId,
+            sessionId: r.sessionId,
+            title: r.observation.title,
+            narrative: r.observation.narrative,
+            score: undefined,
+            timestamp: r.observation.timestamp,
+          }));
+          const text = narrativeResults
+            .map((r, index) => `${index + 1}. ${r.title}\n${r.narrative}`)
+            .join("\n\n");
+          return { mode: "expanded", format: "narrative", results: narrativeResults, text, truncated };
+        }
+        return { mode: "expanded", format: "full", results: scoped, truncated };
       }
 
       if (!data.query || typeof data.query !== "string" || !data.query.trim()) {

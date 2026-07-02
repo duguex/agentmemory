@@ -273,14 +273,26 @@ export function registerMcpEndpoints(
             }
             const expandIds = parseCsvList(args.expandIds).slice(0, 20);
             const limit = Math.max(1, Math.min(100, asNumber(args.limit, 10) ?? 10));
+            const fmt = typeof args.format === "string" && ["compact", "narrative", "full"].includes(args.format) ? args.format : undefined;
             const result = await sdk.trigger({
               function_id: "mem::smart-search",
               payload: {
                 query: args.query,
                 expandIds,
                 limit,
+                format: fmt,
               },
             });
+            if (result && typeof result === "object" && result.mode === "expanded" && result.format === "narrative" && typeof result.text === "string") {
+              return {
+                status_code: 200,
+                body: {
+                  content: [
+                    { type: "text", text: result.text },
+                  ],
+                },
+              };
+            }
             return {
               status_code: 200,
               body: {
