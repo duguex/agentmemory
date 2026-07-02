@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/.agentmemory/backups}"
 AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 AGENTMEMORY_SECRET="${AGENTMEMORY_SECRET:-}"
-AUTH="${AGENTMEMORY_SECRET:+-H \"Authorization: Bearer $AGENTMEMORY_SECRET\"}"
+AUTH=()
+[ -n "${AGENTMEMORY_SECRET:-}" ] && AUTH=(-H "Authorization: Bearer $AGENTMEMORY_SECRET")
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$BACKUP_DIR"
@@ -17,7 +18,7 @@ case "${1:-help}" in
   export|backup)
     FILE="$BACKUP_DIR/agentmemory-export-$TIMESTAMP.json"
     echo "Exporting to $FILE ..."
-    curl -s "$AGENTMEMORY_URL/agentmemory/export" $AUTH | python3 -m json.tool > "$FILE"
+    curl -s "$AGENTMEMORY_URL/agentmemory/export" "${AUTH[@]}" | python3 -m json.tool > "$FILE"
     SIZE=$(wc -c < "$FILE")
     echo "Done: $((SIZE / 1024)) KB"
     # Keep last 5 backups, remove older
@@ -35,10 +36,11 @@ case "${1:-help}" in
     fi
     echo "Importing $FILE ..."
     echo "Mode: merge (skip existing, keep new)"
+    jq -c '{exportData: ., strategy: "replace"}' "$FILE" | \
     curl -s -X POST "$AGENTMEMORY_URL/agentmemory/import" \
       -H "Content-Type: application/json" \
-      $AUTH \
-      -d "$(cat "$FILE")"
+      "${AUTH[@]}" \
+      --data-binary @-
     echo ""
     ;;
 
