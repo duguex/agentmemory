@@ -29,7 +29,6 @@ import time
 import glob
 from datetime import datetime, timezone
 from pathlib import Path
-from collections import OrderedDict
 
 import requests
 _http_session: requests.Session | None = None
@@ -135,13 +134,14 @@ def parse_session(filepath):
     
     if not entries:
         return None, []
-    
-    # Parse session metadata from first line
-    try:
-        meta_entry = entries[0]
-    except json.JSONDecodeError:
+
+    # Parse session metadata from first line. The first JSONL line is
+    # sometimes a header that isn't a dict (e.g. an array preamble), so
+    # walk past non-dict entries before treating one as metadata.
+    meta_entry = next((e for e in entries if isinstance(e, dict)), None)
+    if meta_entry is None:
         return None, []
-    
+
     session_id = meta_entry.get("id", Path(filepath).stem[:36])
     session_cwd = meta_entry.get("cwd", "")
     session_ts = meta_entry.get("timestamp", "")
@@ -161,8 +161,7 @@ def parse_session(filepath):
     #   - {"type": "tool_result", "name", "id", "output", "error", "timestamp"}
     timeline = []
     pending_tool_calls = {}  # id -> tool_call action
-    current_assistant = None
-    
+
     for entry in entries[1:]:
         if not isinstance(entry, dict):
             continue
@@ -198,8 +197,6 @@ def parse_session(filepath):
                 for tc in tool_calls:
                     if tc["id"]:
                         pending_tool_calls[tc["id"]] = tc
-                if not current_assistant:
-                    current_assistant = {"text": text, "timestamp": ts}
             else:
                 # Plain assistant message (no tools) — treat as the assistant response
                 timeline.append({"type": "assistant_text", "text": text, "timestamp": ts})
@@ -345,17 +342,7 @@ def main():
                 continue
             
             total_turns += 1
-            
-            # Build tool outputs for the observation
-            tool_outputs = []
-            for t in turn["tools"][:8]:  # limit to 8 tools per turn
-                tool_outputs.append({
-                    "name": t["name"],
-                    "input": t.get("input", "")[:MAX_TOOL_CALL_INPUT],
-                    "output": t.get("output", "")[:MAX_TOOL_CALL_OUTPUT],
-                    "error": t.get("error", False),
-                })
-            
+
             # Use the original user message timestamp if available, else session start
             obs_ts = turn["user_ts"] or session_meta["timestamp"]
             # Normalize to RFC 3339
@@ -366,30 +353,70 @@ def main():
                     obs_ts = datetime.now(timezone.utc).isoformat()
             else:
                 obs_ts = datetime.now(timezone.utc).isoformat()
-            
-            tool_output_json = json.dumps({
-                "tools": tool_outputs,
-                "assistant": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT // 2),
-            }, ensure_ascii=False)
-            
-            # Use post_tool_use hookType for better MiniMax summarization.
-            # Turns with tools: use the first tool's name; plain user messages: "conversation"
-            tool_name = turn["tools"][0]["name"] if turn["tools"] else "conversation"
-            ok = api_post("observe", {
-                "hookType": "post_tool_use",
+
+            base_payload = {
                 "sessionId": f"backfill-{session_meta['id']}",
                 "project": session_meta["project"],
                 "cwd": session_meta["cwd"],
-                "timestamp": obs_ts,
-                "data": {
-                    "tool_name": tool_name,
-                    "tool_input": truncate(turn["user_text"], MAX_TOOL_INPUT),
-                    "tool_output": truncate(tool_output_json, MAX_TOOL_OUTPUT),
-                    "prompt": truncate(turn["user_text"], 500),
-                },
-            })
-            if ok:
-                total_sent += 1
+            }
+
+            # 1. Emit the user prompt as its own conversation observation so
+            #    search hits the prompt text directly.
+            if turn["user_text"]:
+                ok = api_post("observe", {
+                    **base_payload,
+                    "hookType": "prompt_submit",
+                    "timestamp": obs_ts,
+                    "data": {
+                        "prompt": truncate(turn["user_text"], MAX_TOOL_INPUT),
+                    },
+                })
+                if ok:
+                    total_sent += 1
+
+            # 2. Emit ONE observation per tool call so each tool is
+            #    individually compressed and indexed. Earlier this code
+            #    flattened all tools into a single JSON-encoded tool_output
+            #    blob, which made smart-search miss 7 of 8 tools in a turn
+            #    (defeating the purpose of backfill).
+            for idx, t in enumerate(turn["tools"][:8]):
+                tool_ts = t.get("timestamp") or obs_ts
+                if tool_ts:
+                    try:
+                        tool_ts = datetime.fromisoformat(tool_ts.replace("Z", "+00:00")).isoformat()
+                    except (ValueError, TypeError):
+                        tool_ts = obs_ts
+                hook_type = "post_tool_failure" if t.get("error") else "post_tool_use"
+                ok = api_post("observe", {
+                    **base_payload,
+                    "hookType": hook_type,
+                    "timestamp": tool_ts,
+                    "data": {
+                        "tool_name": t["name"],
+                        "tool_input": truncate(t.get("input", ""), MAX_TOOL_CALL_INPUT),
+                        "tool_output": truncate(t.get("output", ""), MAX_TOOL_CALL_OUTPUT),
+                        "assistant_text": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT // 2),
+                    },
+                })
+                if ok:
+                    total_sent += 1
+
+            # 3. Emit the trailing assistant message (no tools after it) as
+            #    a prompt_submit observation tagged "conversation" so the
+            #    observe handler routes it through the same path as live
+            #    user prompts.
+            if turn["assistant_text"] and not turn["tools"]:
+                ok = api_post("observe", {
+                    **base_payload,
+                    "hookType": "prompt_submit",
+                    "timestamp": obs_ts,
+                    "data": {
+                        "prompt": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT),
+                        "tool_name": "conversation",
+                    },
+                })
+                if ok:
+                    total_sent += 1
         
         elapsed = time.monotonic() - start_wall
         print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
