@@ -355,14 +355,17 @@ def main():
                 "assistant": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT // 2),
             }, ensure_ascii=False)
             
+            # Use post_tool_use hookType for better MiniMax summarization.
+            # Turns with tools: use the first tool's name; plain user messages: "conversation"
+            tool_name = turn["tools"][0]["name"] if turn["tools"] else "conversation"
             ok = api_post("observe", {
-                "hookType": "prompt_submit",
+                "hookType": "post_tool_use",
                 "sessionId": f"backfill-{session_meta['id'][:20]}",
                 "project": session_meta["project"],
                 "cwd": session_meta["cwd"],
                 "timestamp": obs_ts,
                 "data": {
-                    "tool_name": "user_prompt",
+                    "tool_name": tool_name,
                     "tool_input": truncate(turn["user_text"], MAX_TOOL_INPUT),
                     "tool_output": truncate(tool_output_json, MAX_TOOL_OUTPUT),
                     "prompt": truncate(turn["user_text"], 500),
