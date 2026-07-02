@@ -1370,6 +1370,249 @@ export function registerApiTriggers(
     config: { api_path: "/agentmemory/auto-forget", http_method: "POST" },
   });
 
+  sdk.registerFunction("api::claude-bridge-read",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const result = await sdk.trigger({ function_id: "mem::claude-bridge-read", payload: {} });
+        return { status_code: 200, body: result };
+      } catch {
+        return {
+          status_code: 404,
+          body: { error: "Claude bridge not enabled" },
+        };
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::claude-bridge-read",
+    config: { api_path: "/agentmemory/claude-bridge/read", http_method: "GET" },
+  });
+
+  sdk.registerFunction("api::claude-bridge-sync",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const result = await sdk.trigger({ function_id: "mem::claude-bridge-sync", payload: {} });
+        return { status_code: 200, body: result };
+      } catch {
+        return {
+          status_code: 404,
+          body: { error: "Claude bridge not enabled" },
+        };
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::claude-bridge-sync",
+    config: {
+      api_path: "/agentmemory/claude-bridge/sync",
+      http_method: "POST",
+    },
+  });
+
+  sdk.registerFunction("api::graph-query",
+    async (
+      req: ApiRequest<{
+        startNodeId?: string;
+        nodeType?: string;
+        maxDepth?: number;
+        query?: string;
+        limit?: number;
+        offset?: number;
+      }>,
+    ): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      // Whitelist payload fields explicitly; AGENTS.md security rule:
+      // REST endpoints never pass raw req.body through to sdk.trigger.
+      const payload = {
+        startNodeId: req.body?.startNodeId,
+        nodeType: req.body?.nodeType,
+        maxDepth: req.body?.maxDepth,
+        query: req.body?.query,
+        limit: req.body?.limit,
+        offset: req.body?.offset,
+      };
+      try {
+        const result = await sdk.trigger({ function_id: "mem::graph-query", payload });
+        return { status_code: 200, body: result };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-query",
+    config: { api_path: "/agentmemory/graph/query", http_method: "POST" },
+  });
+
+  sdk.registerFunction("api::graph-stats",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const result = await sdk.trigger({ function_id: "mem::graph-stats", payload: {} });
+        return { status_code: 200, body: result };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-stats",
+    config: { api_path: "/agentmemory/graph/stats", http_method: "GET" },
+  });
+
+  // #814: explicit snapshot rebuild endpoint. Pays the full graph
+  // enumeration once and persists a top-degree subgraph + aggregate
+  // counts so subsequent /graph/query and /graph/stats calls skip the
+  // unbounded kv.list. Operator-grade endpoint exposed for the viewer
+  // banner action and CLI repair.
+  sdk.registerFunction("api::graph-snapshot-rebuild",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const result = await sdk.trigger({
+          function_id: "mem::graph-snapshot-rebuild",
+          payload: {},
+        });
+        return { status_code: 200, body: result };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-snapshot-rebuild",
+    config: { api_path: "/agentmemory/graph/snapshot-rebuild", http_method: "POST" },
+  });
+
+  // #814 v2: clean-restart endpoint for legacy corpora too large for
+  // safe rebuild. Wipes graph state without touching observations, so
+  // recall + history stay intact while the graph rebuilds incrementally
+  // from new extracts (or a one-shot /graph/build replay).
+  sdk.registerFunction("api::graph-reset",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const result = await sdk.trigger({
+          function_id: "mem::graph-reset",
+          payload: {},
+        });
+        return { status_code: 200, body: result };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-reset",
+    config: { api_path: "/agentmemory/graph/reset", http_method: "POST" },
+  });
+
+  sdk.registerFunction("api::graph-extract",
+    async (req: ApiRequest<{ observations: unknown[] }>): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      if (
+        !Array.isArray(req.body?.observations) ||
+        req.body.observations.length === 0
+      ) {
+        return {
+          status_code: 400,
+          body: { error: "observations array is required" },
+        };
+      }
+      try {
+        const result = await sdk.trigger({ function_id: "mem::graph-extract", payload: req.body });
+        return { status_code: 200, body: result };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-extract",
+    config: { api_path: "/agentmemory/graph/extract", http_method: "POST" },
+  });
+
+  // Backfill the knowledge graph from existing compressed observations.
+  // Viewer calls this when the graph is empty (#666). Iterates every
+  // session, collects observations that have a `title` (compressed only),
+  // and feeds them through `mem::graph-extract` in batches.
+  sdk.registerFunction("api::graph-build",
+    async (req: ApiRequest<{ batchSize?: number }>): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      const batchSize = Math.max(
+        1,
+        Math.min(100, Number((req.body as { batchSize?: number })?.batchSize) || 25),
+      );
+      try {
+        const sessions = await kv.list<Session>(KV.sessions);
+        let totalNodes = 0;
+        let totalEdges = 0;
+        let batchesRun = 0;
+        for (const session of sessions) {
+          const sid = session?.id;
+          if (typeof sid !== "string" || sid.length === 0) continue;
+          const observations = await kv.list<CompressedObservation>(KV.observations(sid));
+          const compressed = observations.filter((o) => o && typeof o.title === "string" && o.title.length > 0);
+          if (compressed.length === 0) continue;
+          for (let i = 0; i < compressed.length; i += batchSize) {
+            const batch = compressed.slice(i, i + batchSize);
+            try {
+              const result = (await sdk.trigger({
+                function_id: "mem::graph-extract",
+                payload: { observations: batch },
+              })) as { success?: boolean; nodesAdded?: number; edgesAdded?: number };
+              if (result?.success) {
+                totalNodes += Number(result.nodesAdded) || 0;
+                totalEdges += Number(result.edgesAdded) || 0;
+              }
+              batchesRun++;
+            } catch (err) {
+              logger.warn("graph-build batch failed", {
+                sessionId: sid,
+                batchIndex: Math.floor(i / batchSize),
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        }
+        return {
+          status_code: 200,
+          body: {
+            success: true,
+            sessions: sessions.length,
+            batches: batchesRun,
+            nodes: totalNodes,
+            edges: totalEdges,
+          },
+        };
+      } catch {
+        return graphDisabledResponse();
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::graph-build",
+    config: { api_path: "/agentmemory/graph/build", http_method: "POST" },
+  });
+
   sdk.registerFunction("api::consolidate-pipeline",
     async (req: ApiRequest<{ tier?: string }>): Promise<Response> => {
       const authErr = checkAuth(req, secret);

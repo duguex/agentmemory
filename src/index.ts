@@ -56,6 +56,8 @@ import { registerAutoForgetFunction } from "./functions/auto-forget.js";
 import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
 import { registerConsolidationPipelineFunction } from "./functions/consolidation-pipeline.js";
+import { registerClaudeBridgeFunction } from "./functions/claude-bridge.js";
+import { registerGraphFunction } from "./functions/graph.js";
 
 import { registerTeamFunction } from "./functions/team.js";
 import { registerGovernanceFunction } from "./functions/governance.js";
@@ -91,6 +93,7 @@ import { registerApiTriggers } from "./triggers/api.js";
 import { registerEventTriggers } from "./triggers/events.js";
 import { registerMcpEndpoints } from "./mcp/server.js";
 import { getAllTools } from "./mcp/tools-registry.js";
+import { loadClaudeBridgeConfig } from "./config.js";
 import { startViewerServer } from "./viewer/server.js";
 import { MetricsStore } from "./eval/metrics-store.js";
 import { DedupMap } from "./functions/dedup.js";
@@ -282,6 +285,9 @@ async function main() {
   } else {
     bootLog(`Consolidation pipeline: disabled (CONSOLIDATION_ENABLED=false)`);
   }
+
+  registerClaudeBridgeFunction(sdk, kv, loadClaudeBridgeConfig());
+  registerGraphFunction(sdk, kv, provider);
 
   if (isAutoCompressEnabled()) {
     bootLog(
@@ -542,24 +548,7 @@ async function main() {
     config.restPort,
   );
 
-  const autoForgetIntervalMs = parseInt(process.env.AUTO_FORGET_INTERVAL_MS || "3600000", 10);
   const consolidationIntervalMs = parseInt(process.env.CONSOLIDATION_INTERVAL_MS || "7200000", 10);
-
-  // New env var (AGENTMEMORY_AUTO_FORGET_INTERVAL) is active — disable legacy to prevent duplicate schedule
-  if (getAutoForgetIntervalMs() > 0) {
-    process.env.AUTO_FORGET_ENABLED = "false";
-  }
-
-  if (process.env.AUTO_FORGET_ENABLED !== "false") {
-    const autoForgetTimer = setInterval(async () => {
-      try {
-        await sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false } });
-      } catch {}
-    }, autoForgetIntervalMs);
-    autoForgetTimer.unref();
-    _cleanupTimers.push(autoForgetTimer);
-    bootLog(`Auto-forget: enabled (every ${autoForgetIntervalMs / 60000}m)`);
-  }
 
   if (process.env.LESSON_DECAY_ENABLED !== "false") {
     const lessonDecayTimer = setInterval(async () => {

@@ -154,7 +154,11 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
 }
 
 export function getAutoForgetIntervalMs(): number {
-	const val = getEnvVar("AGENTMEMORY_AUTO_FORGET_INTERVAL") || "";
+	// Prefer new env var; fall back to legacy AUTO_FORGET_INTERVAL_MS for backward compat.
+	const val =
+		getEnvVar("AGENTMEMORY_AUTO_FORGET_INTERVAL") ||
+		process.env.AUTO_FORGET_INTERVAL_MS ||
+		"";
 	const parsed = parseInt(val, 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }

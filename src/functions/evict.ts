@@ -86,9 +86,19 @@ async function runRecoveredSessionConsolidation(sdk: ISdk): Promise<void> {
       payload: { tier: "all" },
     });
   } catch (err) {
-    logger.warn("Recovered session consolidation failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    // Distinguish "function not registered" (CONSOLIDATION_ENABLED=false)
+    // from real failures — they need different operator responses. Without
+    // the gate, an offline / disabled deployment silently loses every
+    // recovered-session consolidation and emits a generic warning that
+    // looks identical to a transient RPC failure.
+    const msg = err instanceof Error ? err.message : String(err);
+    const notRegistered = /not registered|function_id.*unknown/i.test(msg);
+    logger.warn(
+      notRegistered
+        ? "Recovered session consolidation skipped (mem::consolidate-pipeline not registered — CONSOLIDATION_ENABLED=false)"
+        : "Recovered session consolidation failed",
+      { error: msg },
+    );
   }
 }
 

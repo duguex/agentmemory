@@ -24,6 +24,7 @@ package-lock.json
 pnpm-lock.yaml
 yarn.lock
 integrations/hermes/__pycache__/
+scripts/__pycache__/
 
 # Eval reports (transient; published scorecards live in docs/benchmarks/)
 eval/reports/
