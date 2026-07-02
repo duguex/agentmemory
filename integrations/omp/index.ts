@@ -57,7 +57,8 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as T;
-	} catch {
+	} catch (err) {
+		console.warn(`[agentmemory] apiPost failed: ${err instanceof Error ? err.message : String(err)}`);
 		return null;
 	}
 }
@@ -74,7 +75,8 @@ async function apiGet<T>(path: string): Promise<T | null> {
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as T;
-	} catch {
+	} catch (err) {
+		console.warn(`[agentmemory] apiGet failed: ${err instanceof Error ? err.message : String(err)}`);
 		return null;
 	}
 }

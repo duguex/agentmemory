@@ -24,7 +24,6 @@ Usage:
 
 import json
 import os
-import re
 import sys
 import time
 import glob
@@ -317,7 +316,7 @@ def main():
     total_sent = 0
     total_turns = 0
     skipped_sessions = 0
-    start_wall = time.time()
+    start_wall = time.monotonic()
     
     projects = {}
     for i, fpath in enumerate(session_files):
@@ -336,7 +335,7 @@ def main():
         if dry_run:
             total_turns += len(turns)
             total_sent += len(turns)
-            elapsed = time.time() - start_wall
+            elapsed = time.monotonic() - start_wall
             print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
                   f"{session_meta['id'][:12]}  {len(turns):3d} turns")
             continue
@@ -392,7 +391,7 @@ def main():
             if ok:
                 total_sent += 1
         
-        elapsed = time.time() - start_wall
+        elapsed = time.monotonic() - start_wall
         print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
               f"turns={len(turns):3d} sent={total_sent}  ({elapsed:.0f}s)")
         
@@ -400,7 +399,7 @@ def main():
         if not dry_run and (i + 1) % 5 == 0:
             time.sleep(0.3)
     
-    elapsed = time.time() - start_wall
+    elapsed = time.monotonic() - start_wall
     print()
     if dry_run:
         print(f"Would backfill {total_sent} turns from {len(session_files) - skipped_sessions} sessions "
