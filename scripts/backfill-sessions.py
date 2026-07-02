@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """
-Backfill old OMP sessions into agentmemory.
+Backfill old OMP sessions into agentmemory — v2.
 
 Reads session JSONL files from ~/.omp/agent/sessions/ and sends each
-conversation turn as an observation to agentmemory's REST API.
+conversation turn as an observation to agentmemory's observe API.
+
+Improvements over v1:
+  - Real timestamps from original JSONL entries (not utcnow)
+  - Real cwd from session metadata (not hardcoded)
+  - Full original session ID for traceability (not truncated)
+  - Better project detection from cwd
+  - Larger/more appropriate truncation limits
+  - Proper handling of toolCalls in assistant messages
+  - Proper matching of toolResults to toolCalls by toolCallId
+  - Correct role detection (toolResult, not tool_result)
+  - Faster batch processing
+  - Progress reporting with times
 
 Usage:
   export AGENTMEMORY_SECRET=omp-memory-local
@@ -16,16 +28,22 @@ import re
 import sys
 import time
 import glob
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from collections import OrderedDict
 
 import requests
 
 AGENTMEMORY_URL = os.environ.get("AGENTMEMORY_URL", "http://localhost:3111")
 AGENTMEMORY_SECRET = os.environ.get("AGENTMEMORY_SECRET", "")
 SESSIONS_DIR = os.path.expanduser("~/.omp/agent/sessions")
-BATCH_DELAY = 0.5
-BATCH_SIZE = 10
+
+# Per-observation content limits (these go through MiniMax compression;
+# longer text → more accurate summaries, but larger payloads)
+MAX_TOOL_INPUT = 3000       # user prompt text
+MAX_TOOL_OUTPUT = 12000     # combined tool calls + assistant text
+MAX_TOOL_CALL_INPUT = 1000  # individual tool call input
+MAX_TOOL_CALL_OUTPUT = 4000 # individual tool call output/results
 
 
 def auth_headers():
@@ -38,220 +56,349 @@ def auth_headers():
 def api_post(path, body):
     url = f"{AGENTMEMORY_URL.rstrip('/')}/agentmemory/{path}"
     try:
-        r = requests.post(url, headers=auth_headers(), json=body, timeout=10)
+        r = requests.post(url, headers=auth_headers(), json=body, timeout=15)
         return r.ok
     except Exception as e:
         print(f"  [error] {e}")
         return False
 
 
-def extract_project(filepath):
-    parent = Path(filepath).parent.parent.name
-    return parent.lstrip("-")
+def truncate(s, max_len):
+    """Truncate string to max_len bytes without breaking UTF-8."""
+    if not s or len(s) <= max_len:
+        return s
+    encoded = s.encode("utf-8")[:max_len]
+    # Decode back, dropping any partial multi-byte character
+    return encoded.decode("utf-8", errors="ignore")
 
 
-def extract_session_id(filepath):
-    name = Path(filepath).stem
-    m = re.search(r"[a-f0-9]{8}-[a-f0-9]{4}-7000-[a-f0-9]{4}-[a-f0-9]{12}", name)
-    return m.group() if m else name[:30]
-
-
-def get_text_content(content_parts):
+def get_text_from_content(content_parts):
     """Extract text from a content array (text/thinking/toolCall/toolResult parts)."""
     if isinstance(content_parts, str):
         return content_parts
     texts = []
     for part in content_parts if isinstance(content_parts, list) else []:
-        if isinstance(part, dict) and part.get("type") in ("text", "thinking") and part.get("text"):
+        if isinstance(part, dict) and part.get("text"):
             texts.append(part["text"])
     return "\n".join(texts)
 
 
+def project_from_cwd(cwd):
+    """Derive a meaningful project name from the session cwd path.
+    
+    Heuristic:
+      - Look for known project roots in the path
+      - Fall back to the deepest meaningful directory name
+    """
+    if not cwd:
+        return "unknown"
+    
+    parts = cwd.strip("/").split("/")
+    
+    # Detect project root keywords (case-insensitive)
+    known_roots = {"vasp", "vasp_sop", "calc", "paper", "crisp", "omp", "agentmemory", "memory"}
+    for p in reversed(parts):
+        if p.lower() in known_roots:
+            return p
+    
+    # Fallback: find a reasonable project name
+    # Skip common machine path prefixes
+    skip = {"home", "mnt", "shared", "2sidesniddle", "root", "tmp", "var"}
+    for p in reversed(parts):
+        if p.lower() not in skip:
+            return p
+    
+    # Last resort: use the last path component
+    return parts[-1] if parts else "unknown"
+
+
 def parse_session(filepath):
-    """Parse session JSONL into conversation turns."""
-    turns = []  # Each turn: {user, tools[{name,input,output}], assistant}
-
+    """Parse session JSONL into structured session metadata and conversation turns.
+    
+    Returns: (session_meta, turns)
+      session_meta: {id, cwd, timestamp, project}
+      turns: [{user_text, user_ts, assistant_text, assistant_ts, tools: [{name, input, output, error}]}]
+    """
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        messages = []
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            # Only process message-type entries
-            if entry.get("type") != "message":
-                continue
-
-            msg = entry.get("message", {})
-            if not msg:
-                continue
-
-            role = msg.get("role", "")
-            content_parts = msg.get("content", [])
-            text = get_text_content(content_parts)
-
-            if role == "user":
-                if text.strip():
-                    messages.append({"role": "user", "text": text.strip()})
-
-            elif role == "assistant":
-                # Extract tool calls if any
-                tool_calls = msg.get("toolCalls", [])
-                messages.append({
-                    "role": "assistant",
-                    "text": text.strip(),
-                    "toolCalls": [
-                        {"name": tc.get("toolName", "unknown"),
-                         "input": json.dumps(tc.get("input", {}), ensure_ascii=False)[:500]}
-                        for tc in tool_calls
-                    ] if tool_calls else [],
+        lines = [l.strip() for l in f if l.strip()]
+    
+    if not lines:
+        return None, []
+    
+    # Parse session metadata from first line
+    try:
+        meta_entry = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return None, []
+    
+    session_id = meta_entry.get("id", Path(filepath).stem[:36])
+    session_cwd = meta_entry.get("cwd", "")
+    session_ts = meta_entry.get("timestamp", "")
+    project = project_from_cwd(session_cwd)
+    
+    session_meta = {
+        "id": session_id,
+        "cwd": session_cwd,
+        "timestamp": session_ts,
+        "project": project,
+    }
+    
+    # Parse entries into a timeline of actions
+    # Each action is either:
+    #   - {"type": "user", "text", "timestamp"}
+    #   - {"type": "tool_call", "name", "input", "id", "assistant_ts", "assistant_text"}
+    #   - {"type": "tool_result", "name", "id", "output", "error", "timestamp"}
+    timeline = []
+    pending_tool_calls = {}  # id -> tool_call action
+    current_assistant = None
+    
+    for line in lines[1:]:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        
+        if entry.get("type") != "message":
+            continue
+        
+        msg = entry.get("message", {})
+        role = msg.get("role", "")
+        ts = entry.get("timestamp", "")
+        
+        if role == "user":
+            text = get_text_from_content(msg.get("content", ""))
+            if text.strip():
+                timeline.append({"type": "user", "text": text.strip(), "timestamp": ts})
+        
+        elif role == "assistant":
+            text = get_text_from_content(msg.get("content", ""))
+            tc = msg.get("toolCalls", [])
+            if tc:
+                # There are tool calls — queue them pending their results
+                for t in tc:
+                    tid = t.get("toolCallId") or t.get("id")
+                    if tid:
+                        inp = json.dumps(t.get("input", {}), ensure_ascii=False)
+                        pending_tool_calls[tid] = {
+                            "type": "tool_call",
+                            "name": t.get("toolName", "unknown"),
+                            "input": inp,
+                            "id": tid,
+                            "assistant_ts": ts,
+                            "assistant_text": text,
+                        }
+                if not current_assistant:
+                    current_assistant = {"text": text, "timestamp": ts}
+            else:
+                # Plain assistant message (no tools) — treat as the assistant response
+                timeline.append({"type": "assistant_text", "text": text, "timestamp": ts})
+        
+        elif role == "tool_result" or role == "toolResult":
+            text = get_text_from_content(msg.get("content", ""))
+            tid = msg.get("toolCallId") or msg.get("id")
+            tn = msg.get("toolName", "unknown")
+            is_err = msg.get("isError", False)
+            
+            if tid and tid in pending_tool_calls:
+                tc_action = pending_tool_calls.pop(tid)
+                tc_action["output"] = text
+                tc_action["error"] = is_err
+                tc_action["tool_result_ts"] = ts
+                timeline.append(tc_action)
+            else:
+                # Orphaned tool result — attach to any unmatched pending call
+                timeline.append({
+                    "type": "tool_result",
+                    "name": tn,
+                    "id": tid,
+                    "output": text,
+                    "error": is_err,
+                    "timestamp": ts,
                 })
-
-            elif role == "toolResult":
-                # Match to last tool call
-                text = text.strip()
-                tool_name = msg.get("toolName", "unknown")
-                is_error = msg.get("isError", False)
-                if messages and messages[-1]["role"] == "assistant":
-                    last = messages[-1]
-                    if last.get("toolCalls"):
-                        # Attach result to the corresponding tool call
-                        for tc in last["toolCalls"]:
-                            if tc["name"] == tool_name and "output" not in tc:
-                                tc["output"] = text[:2000]
-                                tc["error"] = is_error
-                                break
-
-    # Group messages into turns
-    current_turn = None
-    for msg in messages:
-        if msg["role"] == "user":
-            if current_turn:
-                turns.append(current_turn)
-            current_turn = {"user": msg["text"], "tools": [], "assistant": ""}
-        elif msg["role"] == "assistant":
-            if current_turn is None:
-                current_turn = {"user": "", "tools": [], "assistant": ""}
-            current_turn["assistant"] = msg["text"]
-            for tc in msg.get("toolCalls", []):
-                current_turn["tools"].append(tc)
-        elif msg["role"] == "toolResult":
-            pass  # Already attached to toolCalls
-
-    if current_turn:
-        turns.append(current_turn)
-
-    return turns
+        
+        elif role == "tool_result_error":
+            text = get_text_from_content(msg.get("content", ""))
+            tid = msg.get("toolCallId") or msg.get("id")
+            tn = msg.get("toolName", "unknown")
+            if tid and tid in pending_tool_calls:
+                tc_action = pending_tool_calls.pop(tid)
+                tc_action["output"] = text
+                tc_action["error"] = True
+                tc_action["tool_result_ts"] = ts
+                timeline.append(tc_action)
+    
+    # Any pending (unmatched) tool calls — add as-is
+    for tid, tc_action in pending_tool_calls.items():
+        timeline.append(tc_action)
+    
+    # Group timeline into conversation turns:
+    # A turn = user message → tool calls → assistant response
+    turns = []
+    current = {"user_text": "", "user_ts": "", "tools": [], "assistant_text": "", "assistant_ts": ""}
+    
+    for action in timeline:
+        if action["type"] == "user":
+            # Save current turn and start new one
+            if current["user_text"] or current["tools"] or current["assistant_text"]:
+                turns.append(current)
+            current = {"user_text": action["text"], "user_ts": action["timestamp"], 
+                       "tools": [], "assistant_text": "", "assistant_ts": ""}
+        
+        elif action["type"] in ("tool_call", "tool_result"):
+            current["tools"].append({
+                "name": action.get("name", "unknown"),
+                "input": truncate(action.get("input", ""), MAX_TOOL_CALL_INPUT),
+                "output": truncate(action.get("output", ""), MAX_TOOL_CALL_OUTPUT),
+                "error": action.get("error", False),
+                "ts": action.get("tool_result_ts") or action.get("assistant_ts") or "",
+                "assistant_text": action.get("assistant_text", ""),
+            })
+            if action.get("assistant_text"):
+                current["assistant_text"] = action["assistant_text"]
+            if action.get("assistant_ts"):
+                current["assistant_ts"] = action["assistant_ts"]
+        
+        elif action["type"] == "assistant_text":
+            current["assistant_text"] = action["text"]
+            current["assistant_ts"] = action["timestamp"]
+    
+    if current["user_text"] or current["tools"] or current["assistant_text"]:
+        turns.append(current)
+    
+    return session_meta, turns
 
 
 def main():
     dry_run = "--dry-run" in sys.argv
     limit = None
     project_filter = None
-
+    
     for arg in sys.argv[1:]:
         if arg.startswith("--project="):
-            project_filter = arg.split("=", 1)[1]
+            project_filter = arg.split("=", 1)[1].lower()
         elif arg.startswith("--limit="):
             limit = int(arg.split("=", 1)[1])
-
+    
     if not AGENTMEMORY_SECRET:
         print("Warning: AGENTMEMORY_SECRET not set, server may reject requests")
-
+    
     # Find session files
     session_files = []
     for session_dir in sorted(glob.glob(os.path.join(SESSIONS_DIR, "-*/"))):
-        project = session_dir.rstrip("/").split("-", 1)[-1] if "-" in session_dir else ""
-        if project_filter and project_filter.lower() not in project.lower():
-            continue
         for f in sorted(glob.glob(os.path.join(session_dir, "*.jsonl"))):
             session_files.append(f)
-
+    
     if limit:
         session_files = session_files[:limit]
-
+    
     print(f"Found {len(session_files)} session files")
     if project_filter:
-        print(f"Filter: {project_filter}")
+        print(f"Filter: project containing \"{project_filter}\"")
     if dry_run:
         print("Dry run - no data sent")
     print()
-
+    
     total_sent = 0
     total_turns = 0
-    skipped = 0
-
+    skipped_sessions = 0
+    start_wall = time.time()
+    
     for i, fpath in enumerate(session_files):
-        project = extract_project(fpath)
-        turns = parse_session(fpath)
-
-        if not turns:
-            skipped += 1
+        session_meta, turns = parse_session(fpath)
+        
+        if not session_meta or not turns:
+            skipped_sessions += 1
             continue
-
+        
+        # Apply project filter
+        if project_filter and project_filter not in session_meta["project"].lower():
+            skipped_sessions += 1
+            continue
+        
+        if dry_run:
+            total_turns += len(turns)
+            total_sent += len(turns)
+            elapsed = time.time() - start_wall
+            print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
+                  f"{session_meta['id'][:12]}  {len(turns):3d} turns")
+            continue
+        
         for turn in turns:
-            if not turn["user"] and not turn["tools"]:
+            if not turn["user_text"] and not turn["tools"]:
                 continue
-
+            
             total_turns += 1
-
-            # Build observation content
-            tool_summary = "; ".join(
-                [f"{t['name']}({t.get('input','')[:40]})" for t in turn["tools"][:3]]
-            )
-            if turn["tools"]:
-                content = f"[{project}] {turn['user'][:200]} -> {tool_summary}"
-            else:
-                content = f"[{project}] {turn['user'][:200]}"
-
-            if dry_run:
-                total_sent += 1
-                continue
-
-            # Build tool output payload
+            
+            # Build tool outputs for the observation
             tool_outputs = []
-            for t in turn["tools"]:
+            for t in turn["tools"][:8]:  # limit to 8 tools per turn
                 tool_outputs.append({
                     "name": t["name"],
-                    "input": t.get("input", "")[:500],
-                    "output": t.get("output", "")[:2000],
+                    "input": t.get("input", "")[:MAX_TOOL_CALL_INPUT],
+                    "output": t.get("output", "")[:MAX_TOOL_CALL_OUTPUT],
                     "error": t.get("error", False),
                 })
-
-            session_id = extract_session_id(fpath)
+            
+            # Use the original user message timestamp if available, else session start
+            obs_ts = turn["user_ts"] or session_meta["timestamp"]
+            # Normalize to RFC 3339
+            if obs_ts:
+                try:
+                    obs_ts = datetime.fromisoformat(obs_ts.replace("Z", "+00:00")).isoformat()
+                except:
+                    obs_ts = datetime.now(timezone.utc).isoformat()
+            else:
+                obs_ts = datetime.now(timezone.utc).isoformat()
+            
+            tool_output_json = json.dumps({
+                "tools": tool_outputs,
+                "assistant": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT // 2),
+            }, ensure_ascii=False)
+            
             ok = api_post("observe", {
-                "hookType": "post_tool_use",
-                "sessionId": f"backfill-{session_id[:12]}",
-                "project": project,
-                "cwd": f"/home/duguex/{project}",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "hookType": "prompt_submit",
+                "sessionId": f"backfill-{session_meta['id'][:20]}",
+                "project": session_meta["project"],
+                "cwd": session_meta["cwd"],
+                "timestamp": obs_ts,
                 "data": {
-                    "tool_name": "conversation",
-                    "tool_input": turn["user"][:500],
-                    "tool_output": json.dumps({
-                        "tools": tool_outputs[:5],
-                        "assistant": turn["assistant"][:2000],
-                    }, ensure_ascii=False)[:4000],
+                    "tool_name": "user_prompt",
+                    "tool_input": truncate(turn["user_text"], MAX_TOOL_INPUT),
+                    "tool_output": truncate(tool_output_json, MAX_TOOL_OUTPUT),
+                    "prompt": truncate(turn["user_text"], 500),
                 },
             })
             if ok:
                 total_sent += 1
-
-        if (i + 1) % 10 == 0 or i == len(session_files) - 1:
-            action = "Would send" if dry_run else "Sent"
-            pct = (i + 1) / len(session_files) * 100
-            print(f"  [{pct:5.1f}%] {action} {total_sent} turns, {skipped} empty sessions")
-
-        if total_turns > 0 and total_turns % BATCH_SIZE == 0:
-            time.sleep(BATCH_DELAY)
-
+        
+        elapsed = time.time() - start_wall
+        print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
+              f"turns={len(turns):3d} sent={total_sent}  ({elapsed:.0f}s)")
+        
+        # Small delay between sessions to avoid hammering the server
+        if not dry_run and (i + 1) % 5 == 0:
+            time.sleep(0.3)
+    
+    elapsed = time.time() - start_wall
     print()
-    action = "Would backfill" if dry_run else "Backfilled"
-    print(f"{action} {total_sent} turns from {len(session_files) - skipped} sessions ({skipped} empty)")
+    if dry_run:
+        print(f"Would backfill {total_sent} turns from {len(session_files) - skipped_sessions} sessions "
+              f"({skipped_sessions} skipped) — estimate {elapsed:.0f}s dry run")
+    else:
+        print(f"Backfilled {total_sent} turns from {len(session_files) - skipped_sessions} sessions "
+              f"({skipped_sessions} skipped) in {elapsed:.0f}s")
+        
+        # Summary stats
+        projects = {}
+        for fpath in session_files:
+            sm, turns = parse_session(fpath)
+            if sm:
+                p = sm["project"]
+                projects[p] = projects.get(p, 0) + len(turns) if turns else projects.get(p, 0)
+        print()
+        print("Per-project summary:")
+        for p, count in sorted(projects.items(), key=lambda x: -x[1]):
+            print(f"  {p:20s} {count:5d} turns")
 
 
 if __name__ == "__main__":
