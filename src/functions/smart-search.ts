@@ -303,11 +303,49 @@ export function registerSmartSearchFunction(
         results: compact.length,
         lessons: lessons.length,
       });
+      const format =
+        typeof data.format === "string" ? data.format : "compact";
+      if (format === "narrative") {
+        const narrativeResults: Array<{
+          obsId: string;
+          sessionId: string;
+          title: string;
+          narrative: string;
+          score: number | undefined;
+          timestamp: string;
+        }> = filteredHybrid.map((r) => ({
+          obsId: r.observation.id,
+          sessionId: r.sessionId,
+          title: r.observation.title,
+          narrative: r.observation.narrative,
+          score: r.combinedScore,
+          timestamp: r.observation.timestamp,
+        }));
+        const text = narrativeResults
+          .map((r, index) => `${index + 1}. ${r.title}\n${r.narrative}`)
+          .join("\n\n");
+        const narrativeResponse: {
+          mode: "compact";
+          format: "narrative";
+          results: typeof narrativeResults;
+          text: string;
+          lessons?: CompactLessonResult[];
+        } = {
+          mode: "compact",
+          format: "narrative",
+          results: narrativeResults,
+          text,
+        };
+        if (includeLessons) narrativeResponse.lessons = lessons;
+        return narrativeResponse;
+      }
       const response: {
         mode: "compact";
+        format?: "compact";
         results: CompactSearchResult[];
         lessons?: CompactLessonResult[];
       } = { mode: "compact", results: compact };
+      if (format === "compact") response.format = "compact";
       if (includeLessons) response.lessons = lessons;
       return response;
     },

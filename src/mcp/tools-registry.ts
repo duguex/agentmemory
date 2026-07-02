@@ -130,6 +130,12 @@ export const CORE_TOOLS: McpToolDef[] = [
           description: "Comma-separated observation IDs to expand",
         },
         limit: { type: "number", description: "Max results (default 10)" },
+        format: {
+          type: "string",
+          enum: ["full", "compact", "narrative"],
+          description:
+            "Result projection format. 'narrative' returns a numbered text block (one per result: title + narrative). 'compact' returns obsId/sessionId/title/type/score/timestamp. 'full' returns the full observation objects. Default is 'compact'.",
+        },
       },
       required: ["query"],
     },
