@@ -35,8 +35,8 @@ case "${1:-help}" in
       exit 1
     fi
     echo "Importing $FILE ..."
-    echo "Mode: merge (skip existing, keep new)"
-    jq -c '{exportData: ., strategy: "replace"}' "$FILE" | \
+    echo "Mode: replace"
+    jq -c '{exportData: ., strategy: "replace"}' "$FILE" |
     curl -s -X POST "$AGENTMEMORY_URL/agentmemory/import" \
       -H "Content-Type: application/json" \
       "${AUTH[@]}" \
