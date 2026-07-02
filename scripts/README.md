@@ -64,3 +64,33 @@ Backfilled 88 turns from 5 sessions (0 skipped) in 0s
 Per-project summary:
   vasp                     5 turns
 ```
+
+## agentmemory-backup.sh
+
+使用官方 REST API 备份/恢复 agentmemory 全部数据。
+
+```bash
+export AGENTMEMORY_SECRET=omp-memory-local
+
+# 导出全部数据（sessions, observations, memories, graph, 等）
+./scripts/agentmemory-backup.sh export
+
+# 列出已有备份
+./scripts/agentmemory-backup.sh list
+
+# 导入备份（merge 模式，跳过重复）
+./scripts/agentmemory-backup.sh import ~/.agentmemory/backups/agentmemory-export-20260702-122500.json
+```
+
+导出格式是 JSON，包含：
+
+| 数据 | 内容 |
+|------|------|
+| `sessions` | 所有会话信息 |
+| `observations` | 所有观察（按 sessionId 分组） |
+| `graphNodes` / `graphEdges` | 知识图谱数据 |
+| `memories` / `semanticMemories` | 记忆单元 |
+| `summaries` | 会话摘要 |
+| `accessLogs` | 访问日志 |
+
+自动保留最近 5 份备份。
