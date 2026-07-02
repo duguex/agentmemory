@@ -1,4 +1,4 @@
-import { registerWorker } from "iii-sdk";
+import { registerWorker, TriggerAction } from "iii-sdk";
 import {
   loadConfig,
   getEnvVar,
@@ -262,7 +262,7 @@ async function main() {
   if (autoForgetMs > 0) {
     bootLog(`Auto-forget: scheduled every ${autoForgetMs}ms`);
     _cleanupTimers.push(setInterval(() => {
-      sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false }, action: "void" }).catch(() => {});
+      sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false }, action: TriggerAction.Void() }).catch(() => {});
     }, autoForgetMs));
   }
 
@@ -270,7 +270,7 @@ async function main() {
   if (evictMs > 0) {
     bootLog(`Eviction: scheduled every ${evictMs}ms`);
     _cleanupTimers.push(setInterval(() => {
-      sdk.trigger({ function_id: "mem::evict", payload: {}, action: "void" }).catch(() => {});
+      sdk.trigger({ function_id: "mem::evict", payload: {}, action: TriggerAction.Void() }).catch(() => {});
     }, evictMs));
   }
 
