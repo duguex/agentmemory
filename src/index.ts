@@ -540,6 +540,11 @@ async function main() {
   const autoForgetIntervalMs = parseInt(process.env.AUTO_FORGET_INTERVAL_MS || "3600000", 10);
   const consolidationIntervalMs = parseInt(process.env.CONSOLIDATION_INTERVAL_MS || "7200000", 10);
 
+  // New env var (AGENTMEMORY_AUTO_FORGET_INTERVAL) is active — disable legacy to prevent duplicate schedule
+  if (getAutoForgetIntervalMs() > 0) {
+    process.env.AUTO_FORGET_ENABLED = "false";
+  }
+
   if (process.env.AUTO_FORGET_ENABLED !== "false") {
     const autoForgetTimer = setInterval(async () => {
       try {
