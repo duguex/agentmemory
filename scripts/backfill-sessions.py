@@ -33,6 +33,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 import requests
+_http_session: requests.Session | None = None
 
 AGENTMEMORY_URL = os.environ.get("AGENTMEMORY_URL", "http://localhost:3111")
 AGENTMEMORY_SECRET = os.environ.get("AGENTMEMORY_SECRET", "")
@@ -54,9 +55,12 @@ def auth_headers():
 
 
 def api_post(path, body):
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
     url = f"{AGENTMEMORY_URL.rstrip('/')}/agentmemory/{path}"
     try:
-        r = requests.post(url, headers=auth_headers(), json=body, timeout=15)
+        r = _http_session.post(url, headers=auth_headers(), json=body, timeout=15)
         return r.ok
     except Exception as e:
         print(f"  [error] {e}")
@@ -120,14 +124,22 @@ def parse_session(filepath):
       turns: [{user_text, user_ts, assistant_text, assistant_ts, tools: [{name, input, output, error}]}]
     """
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        lines = [l.strip() for l in f if l.strip()]
+        entries = []
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     
-    if not lines:
+    if not entries:
         return None, []
     
     # Parse session metadata from first line
     try:
-        meta_entry = json.loads(lines[0])
+        meta_entry = entries[0]
     except json.JSONDecodeError:
         return None, []
     
@@ -152,10 +164,8 @@ def parse_session(filepath):
     pending_tool_calls = {}  # id -> tool_call action
     current_assistant = None
     
-    for line in lines[1:]:
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
+    for entry in entries[1:]:
+        if not isinstance(entry, dict):
             continue
         
         if entry.get("type") != "message":
@@ -172,21 +182,23 @@ def parse_session(filepath):
         
         elif role == "assistant":
             text = get_text_from_content(msg.get("content", ""))
-            tc = msg.get("toolCalls", [])
-            if tc:
-                # There are tool calls — queue them pending their results
-                for t in tc:
-                    tid = t.get("toolCallId") or t.get("id")
-                    if tid:
-                        inp = json.dumps(t.get("input", {}), ensure_ascii=False)
-                        pending_tool_calls[tid] = {
-                            "type": "tool_call",
-                            "name": t.get("toolName", "unknown"),
-                            "input": inp,
-                            "id": tid,
-                            "assistant_ts": ts,
-                            "assistant_text": text,
-                        }
+            # Parse tool calls from content array (OMP JSONL schema)
+            tool_calls = []
+            for part in msg.get("content", []):
+                if isinstance(part, dict) and part.get("type") == "toolCall":
+                    inp = json.dumps(part.get("arguments", {}), ensure_ascii=False)
+                    tool_calls.append({
+                        "type": "tool_call",
+                        "name": part.get("name", "unknown"),
+                        "input": inp,
+                        "id": part.get("id"),
+                        "assistant_ts": ts,
+                        "assistant_text": text,
+                    })
+            if tool_calls:
+                for tc in tool_calls:
+                    if tc["id"]:
+                        pending_tool_calls[tc["id"]] = tc
                 if not current_assistant:
                     current_assistant = {"text": text, "timestamp": ts}
             else:
@@ -277,7 +289,11 @@ def main():
         if arg.startswith("--project="):
             project_filter = arg.split("=", 1)[1].lower()
         elif arg.startswith("--limit="):
-            limit = int(arg.split("=", 1)[1])
+            try:
+                limit = int(arg.split("=", 1)[1])
+            except (ValueError, IndexError):
+                print(f"Error: --limit requires a positive integer, got '{arg.split('=', 1)[1] if '=' in arg else ''}'")
+                sys.exit(1)
     
     if not AGENTMEMORY_SECRET:
         print("Warning: AGENTMEMORY_SECRET not set, server may reject requests")
@@ -303,6 +319,7 @@ def main():
     skipped_sessions = 0
     start_wall = time.time()
     
+    projects = {}
     for i, fpath in enumerate(session_files):
         session_meta, turns = parse_session(fpath)
         
@@ -314,6 +331,7 @@ def main():
         if project_filter and project_filter not in session_meta["project"].lower():
             skipped_sessions += 1
             continue
+        projects[session_meta["project"]] = projects.get(session_meta["project"], 0) + len(turns)
         
         if dry_run:
             total_turns += len(turns)
@@ -345,7 +363,7 @@ def main():
             if obs_ts:
                 try:
                     obs_ts = datetime.fromisoformat(obs_ts.replace("Z", "+00:00")).isoformat()
-                except:
+                except (ValueError, TypeError):
                     obs_ts = datetime.now(timezone.utc).isoformat()
             else:
                 obs_ts = datetime.now(timezone.utc).isoformat()
@@ -360,7 +378,7 @@ def main():
             tool_name = turn["tools"][0]["name"] if turn["tools"] else "conversation"
             ok = api_post("observe", {
                 "hookType": "post_tool_use",
-                "sessionId": f"backfill-{session_meta['id'][:20]}",
+                "sessionId": f"backfill-{session_meta['id']}",
                 "project": session_meta["project"],
                 "cwd": session_meta["cwd"],
                 "timestamp": obs_ts,
@@ -390,18 +408,12 @@ def main():
     else:
         print(f"Backfilled {total_sent} turns from {len(session_files) - skipped_sessions} sessions "
               f"({skipped_sessions} skipped) in {elapsed:.0f}s")
+    
+    print()
+    print("Per-project summary:")
+    for p, count in sorted(projects.items(), key=lambda x: -x[1]):
+        print(f"  {p:20s} {count:5d} turns")
         
-        # Summary stats
-        projects = {}
-        for fpath in session_files:
-            sm, turns = parse_session(fpath)
-            if sm:
-                p = sm["project"]
-                projects[p] = projects.get(p, 0) + len(turns) if turns else projects.get(p, 0)
-        print()
-        print("Per-project summary:")
-        for p, count in sorted(projects.items(), key=lambda x: -x[1]):
-            print(f"  {p:20s} {count:5d} turns")
 
 
 if __name__ == "__main__":
