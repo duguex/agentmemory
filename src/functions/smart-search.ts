@@ -336,7 +336,7 @@ export function registerSmartSearchFunction(
           format: "narrative",
           results: narrativeResults,
           text,
-          truncated: filteredHybrid.length > narrativeResults.length,
+          truncated: filteredHybrid.length < hybridResults.length,
         };
         if (includeLessons) narrativeResponse.lessons = lessons;
         return narrativeResponse;
