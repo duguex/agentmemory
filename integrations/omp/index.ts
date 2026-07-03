@@ -36,12 +36,28 @@ function maybeWarnPlaintextBearer(): void {
 	console.warn("[agentmemory] Sending bearer token over plaintext HTTP to " + url + ". Use https:// in production.");
 }
 
-maybeWarnPlaintextBearer();
-
 function authHeaders(): Record<string, string> {
 	const h: Record<string, string> = { "Content-Type": "application/json" };
 	const s = secret();
-	if (s) h.Authorization = `Bearer ${s}`;
+	if (s) {
+		h.Authorization = `Bearer ${s}`;
+		// Re-evaluate plaintext bearer warning on every request
+		const url = baseUrl();
+		if (url.startsWith("http://")) {
+			try {
+				const u = new URL(url);
+				const isPrivate = (h: string) =>
+					h === "localhost" || h === "127.0.0.1" || h === "::1" ||
+					h.startsWith("10.") || h.startsWith("192.168.") ||
+					/^172\.(1[6-9]|2\d|3[01])\./.test(h);
+				if (!isPrivate(u.hostname)) {
+					console.warn(`[agentmemory] Sending bearer token over plaintext HTTP to ${url}`);
+				}
+			} catch {
+				// invalid URL — skip
+			}
+		}
+	}
 	return h;
 }
 
