@@ -181,7 +181,7 @@ export function registerSmartSearchFunction(
             sessionId: r.sessionId,
             title: r.observation.title,
             type: r.observation.type,
-            score: undefined,
+            score: (r as any).combinedScore ?? (typeof r.observation.importance === "number" ? r.observation.importance / 10 : undefined),
             timestamp: r.observation.timestamp,
           }));
           return { mode: "expanded", format: "compact", results: compactResults, truncated };
@@ -191,8 +191,8 @@ export function registerSmartSearchFunction(
             obsId: r.obsId,
             sessionId: r.sessionId,
             title: r.observation.title,
-            narrative: r.observation.narrative,
-            score: undefined,
+            narrative: typeof r.observation.narrative === "string" ? r.observation.narrative : "",
+            score: (r as any).combinedScore ?? (typeof r.observation.importance === "number" ? r.observation.importance / 10 : undefined),
             timestamp: r.observation.timestamp,
           }));
           const text = narrativeResults
@@ -317,7 +317,7 @@ export function registerSmartSearchFunction(
           obsId: r.observation.id,
           sessionId: r.sessionId,
           title: r.observation.title,
-          narrative: r.observation.narrative,
+          narrative: typeof r.observation.narrative === "string" ? r.observation.narrative : "",
           score: r.combinedScore,
           timestamp: r.observation.timestamp,
         }));
@@ -329,12 +329,14 @@ export function registerSmartSearchFunction(
           format: "narrative";
           results: typeof narrativeResults;
           text: string;
+          truncated: boolean;
           lessons?: CompactLessonResult[];
         } = {
           mode: "compact",
           format: "narrative",
           results: narrativeResults,
           text,
+          truncated: filteredHybrid.length > narrativeResults.length,
         };
         if (includeLessons) narrativeResponse.lessons = lessons;
         return narrativeResponse;
