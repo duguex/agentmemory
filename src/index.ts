@@ -287,7 +287,11 @@ async function main() {
     bootLog(`Consolidation pipeline: disabled (CONSOLIDATION_ENABLED=false)`);
   }
 
-  registerClaudeBridgeFunction(sdk, kv, loadClaudeBridgeConfig());
+  const claudeBridgeConfig = loadClaudeBridgeConfig();
+  if (claudeBridgeConfig.enabled) {
+    registerClaudeBridgeFunction(sdk, kv, claudeBridgeConfig);
+    bootLog(`Claude bridge: syncing to ${claudeBridgeConfig.memoryFilePath}`);
+  }
   if (isGraphExtractionEnabled()) {
     registerGraphFunction(sdk, kv, provider);
   } else {
