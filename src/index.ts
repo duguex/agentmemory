@@ -10,6 +10,7 @@ import {
   isConsolidationEnabled,
   isContextInjectionEnabled,
   isDropStaleIndexEnabled,
+  isGraphExtractionEnabled,
   getAutoForgetIntervalMs,
   getEvictIntervalMs,
 } from "./config.js";
@@ -287,7 +288,11 @@ async function main() {
   }
 
   registerClaudeBridgeFunction(sdk, kv, loadClaudeBridgeConfig());
-  registerGraphFunction(sdk, kv, provider);
+  if (isGraphExtractionEnabled()) {
+    registerGraphFunction(sdk, kv, provider);
+  } else {
+    bootLog(`Graph extraction: disabled (GRAPH_EXTRACTION_ENABLED=false)`);
+  }
 
   if (isAutoCompressEnabled()) {
     bootLog(
