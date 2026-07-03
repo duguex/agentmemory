@@ -305,13 +305,16 @@ mem::graph-extract = async (data) => {
 
 **改动**：在 `src/index.ts` 恢复 `if (claudeBridgeConfig.enabled)` 门控（与 G4.3 配套）。
 
-### G4.9 — evict 定时器默认启用
+### G4.9 — evict 定时器配置策略（新功能，非修复）
 
-**问题**：G4.6 修复后，evict 定时器仍需确保默认启用。
+**背景**：evict 定时器是本次分支新引入的功能（main 中不存在 setInterval 调度 `mem::evict`）。`getEvictIntervalMs()` 默认 0（禁用）。
 
-**改动**：`getEvictIntervalMs()` 默认返回 1h（或从现有 env var 读取）。具体值待与用户确认。
+**决策**：保留 opt-in 默认值（0），不强制启用。运维需要主动设置 `AGENTMEMORY_EVICT_INTERVAL` 才启用。理由：
+1. evict 操作可能涉及大量数据删除（stale sessions、capped observations），opt-in 更安全
+2. auto-forget 是温和的衰减操作，evict 是强力的删除操作，风险等级不同
+3. 现有部署没有这个定时器的概念，强制启用可能造成意外的数据删除
 
-**待澄清**：evict 定时器默认间隔应该是多少？建议 1h，与 auto-forget 一致。
+**改动**：保持 `getEvictIntervalMs()` 默认 0 不变。在 README 中加文档说明新功能。
 
 ---
 
@@ -438,6 +441,5 @@ const narrativeResponse = {
 
 ## 待澄清事项
 
-1. **G4.9 evict 定时器默认间隔**：建议 1h（与 auto-forget 一致）。如需其他值请说明。
-2. **G3.9 熔断器阈值**：失败 5 次 / 冷却 60s 是建议默认值。如需调整请说明。
-3. **G4.7 graph 函数体错误响应格式**：建议 `{ success: false, error: "graph extraction disabled" }`。如需其他格式请说明。
+1. **G3.9 熔断器阈值**：失败 5 次 / 冷却 60s 是建议默认值。如需调整请说明。
+2. **G4.7 graph 函数体错误响应格式**：建议 `{ success: false, error: "graph extraction disabled" }`。如需其他格式请说明。
