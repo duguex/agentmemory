@@ -380,7 +380,7 @@ def main():
             #    blob, which made smart-search miss 7 of 8 tools in a turn
             #    (defeating the purpose of backfill).
             for idx, t in enumerate(turn["tools"][:8]):
-                tool_ts = t.get("timestamp") or obs_ts
+                tool_ts = t.get("ts") or obs_ts
                 if tool_ts:
                     try:
                         tool_ts = datetime.fromisoformat(tool_ts.replace("Z", "+00:00")).isoformat()
