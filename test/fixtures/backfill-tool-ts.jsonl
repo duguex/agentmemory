@@ -1,0 +1,6 @@
+{"type":"session_meta","id":"sess-fix-ts-2026","project":"myproj","cwd":"/tmp/proj","timestamp":"2026-07-01T10:00:00Z"}
+{"type":"user","role":"user","timestamp":"2026-07-01T10:00:00Z","content":"What is the weather?"}
+{"type":"assistant","role":"assistant","timestamp":"2026-07-01T10:00:05Z","content":[
+  {"type":"toolCall","id":"call_1","name":"get_weather","arguments":{"city":"SF"}}
+]}
+{"type":"tool_result","role":"tool","timestamp":"2026-07-01T10:00:30Z","tool_call_id":"call_1","name":"get_weather","output":"sunny, 72F","tool_result_ts":"2026-07-01T10:00:30Z"}

@@ -15,6 +15,7 @@ import {
 } from "../prompts/graph-extraction.js";
 import { recordAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { isGraphExtractionEnabled } from "../config.js";
 
 // #753: keep the response payload below the iii state channel ceiling.
 // 500 nodes + their incident edges hold well under the limit on the
@@ -455,8 +456,15 @@ export function registerGraphFunction(
   kv: StateKV,
   provider: MemoryProvider,
 ): void {
-  sdk.registerFunction("mem::graph-extract", 
+  sdk.registerFunction("mem::graph-extract",
     async (data: { observations: CompressedObservation[] }) => {
+      if (!isGraphExtractionEnabled()) {
+        return {
+          success: false,
+          error: "graph extraction disabled",
+          code: "GRAPH_DISABLED",
+        };
+      }
       if (!data.observations || data.observations.length === 0) {
         return { success: false, error: "No observations provided" };
       }
