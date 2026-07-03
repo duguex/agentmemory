@@ -155,12 +155,13 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
 
 export function getAutoForgetIntervalMs(): number {
 	// Prefer new env var; fall back to legacy AUTO_FORGET_INTERVAL_MS for backward compat.
+	// Default to 3,600,000 (1h) when unset to preserve pre-existing behavior.
 	const val =
 		getEnvVar("AGENTMEMORY_AUTO_FORGET_INTERVAL") ||
 		process.env.AUTO_FORGET_INTERVAL_MS ||
 		"";
 	const parsed = parseInt(val, 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 3_600_000;
 }
 
 export function getEvictIntervalMs(): number {
