@@ -283,7 +283,7 @@ export function registerMcpEndpoints(
                 format: fmt,
               },
             });
-            if (result && typeof result === "object" && result.mode === "expanded" && result.format === "narrative" && typeof result.text === "string") {
+            if (result && typeof result === "object" && result.format === "narrative" && typeof result.text === "string") {
               return {
                 status_code: 200,
                 body: {
