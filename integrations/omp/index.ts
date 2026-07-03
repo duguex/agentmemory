@@ -7,6 +7,7 @@
  */
 
 import { Type } from "typebox";
+import { CircuitBreaker } from "./circuit-breaker.js";
 
 // ── Local ExtensionAPI interface ──────────────────────────────
 interface ExtensionAPI {
@@ -44,8 +45,12 @@ function authHeaders(): Record<string, string> {
 	return h;
 }
 
+// ── Circuit breaker (CLOSED / OPEN / HALF_OPEN) ───────────────
+const httpBreaker = new CircuitBreaker({ threshold: 5, cooldownMs: 60_000 });
+
 async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 	try {
+		if (!httpBreaker.canRequest()) return null;
 		const base = baseUrl().replace(/\/+$/, "");
 		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
@@ -55,9 +60,14 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 			body: body !== undefined ? JSON.stringify(body) : undefined,
 			signal: AbortSignal.timeout(3000),
 		});
-		if (!response.ok) return null;
+		if (!response.ok) {
+			httpBreaker.recordFailure();
+			return null;
+		}
+		httpBreaker.recordSuccess();
 		return (await response.json()) as T;
 	} catch (err) {
+		httpBreaker.recordFailure();
 		console.warn(`[agentmemory] apiPost failed: ${err instanceof Error ? err.message : String(err)}`);
 		return null;
 	}
@@ -65,6 +75,7 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 
 async function apiGet<T>(path: string): Promise<T | null> {
 	try {
+		if (!httpBreaker.canRequest()) return null;
 		const base = baseUrl().replace(/\/+$/, "");
 		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
@@ -73,9 +84,14 @@ async function apiGet<T>(path: string): Promise<T | null> {
 			headers: authHeaders(),
 			signal: AbortSignal.timeout(3000),
 		});
-		if (!response.ok) return null;
+		if (!response.ok) {
+			httpBreaker.recordFailure();
+			return null;
+		}
+		httpBreaker.recordSuccess();
 		return (await response.json()) as T;
 	} catch (err) {
+		httpBreaker.recordFailure();
 		console.warn(`[agentmemory] apiGet failed: ${err instanceof Error ? err.message : String(err)}`);
 		return null;
 	}
