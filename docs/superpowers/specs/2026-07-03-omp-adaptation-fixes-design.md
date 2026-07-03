@@ -222,6 +222,8 @@ function canRequest(): boolean {
 
 所有 `apiPost`/`apiGet` 调用前先检查 `canRequest()`，成功后 `recordSuccess()`，失败后 `recordFailure()`。
 
+**阈值（用户已确认）**：失败 5 次 → OPEN，冷却 60 秒 → HALF_OPEN。
+
 ### G3.10 — maybeWarnPlaintextBearer 重新求值（新增发现 #10）
 
 **问题**：`maybeWarnPlaintextBearer()` 在模块导入时运行一次，但 `baseUrl()`/`secret()` 每次请求重新读取。late-bound env 变更会绕过警告。
@@ -293,11 +295,17 @@ export function getAutoForgetIntervalMs(): number {
 ```ts
 mem::graph-extract = async (data) => {
   if (!isGraphExtractionEnabled()) {
-    return { success: false, error: "graph extraction disabled" };
+    return {
+      success: false,
+      error: "graph extraction disabled",
+      code: "GRAPH_DISABLED",
+    };
   }
   // 实际逻辑...
 };
 ```
+
+**错误响应格式（用户已确认）**：`{ success: false, error: "...", code: "GRAPH_DISABLED" }`，与 claude-bridge 一致。
 
 ### G4.8 — claude-bridge 恢复注册门控（新增发现 #9）
 
@@ -439,7 +447,7 @@ const narrativeResponse = {
 | G5.4 truncated 新字段，下游消费者可能不识别 | 低 | 低 | JSON 兼容，新增字段不破坏 |
 | 熔断器阈值（5 次失败、60s 冷却）需要调优 | 中 | 中 | 通过配置化或默认值文档化 |
 
-## 待澄清事项
+## 已澄清事项（用户已确认）
 
-1. **G3.9 熔断器阈值**：失败 5 次 / 冷却 60s 是建议默认值。如需调整请说明。
-2. **G4.7 graph 函数体错误响应格式**：建议 `{ success: false, error: "graph extraction disabled" }`。如需其他格式请说明。
+1. **G3.9 熔断器阈值**：失败 5 次 → OPEN，冷却 60s → HALF_OPEN。
+2. **G4.7 graph 错误响应格式**：`{ success: false, error: "graph extraction disabled", code: "GRAPH_DISABLED" }`。
