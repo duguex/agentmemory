@@ -65,12 +65,21 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         const observations = await kv.list<CompressedObservation>(
           KV.observations(data.sessionId),
         );
-        const compressed = observations.filter((o) => o.title);
+        // Include LLM-compressed + legacy (no compressionKind, confidence >= 0.7)
+        const compressed = observations.filter((o) =>
+          o.compressionKind === "llm" ||
+          (o.compressionKind === undefined &&
+           typeof o.confidence === "number" &&
+           o.confidence >= 0.7),
+        );
         if (compressed.length > 0) {
           sdk.trigger({
             function_id: "mem::graph-extract",
-            payload: { observations: compressed },
-            action: TriggerAction.Void(),
+            payload: {
+              sessionId: data.sessionId,
+              observationIds: compressed.map((o) => o.id),
+            },
+            action: TriggerAction.Enqueue({ queue: 'mem::graph-extract' }),
           });
         }
       } catch (err) {
