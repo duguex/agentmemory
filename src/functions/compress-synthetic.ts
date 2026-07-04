@@ -102,9 +102,18 @@ export function buildSyntheticCompression(
   if (raw.modality) result.modality = raw.modality;
   if (raw.imageData) result.imageData = raw.imageData;
   if (raw.agentId) result.agentId = raw.agentId;
-  return {
+  const out: CompressedObservation = {
     ...result,
     compressionKind: "synthetic",
     compressionVersion: 1,
   };
+  // P0-2: assert fields are set before writeback. iii-engine's state::set
+  // silently strips fields it doesn't recognize; setting them right at the
+  // return boundary ensures the closure captures them regardless.
+  if (!out.compressionKind || !out.compressionVersion) {
+    throw new Error(
+      `buildSyntheticCompression: compression markers missing for obs ${raw.id}`,
+    );
+  }
+  return out;
 }

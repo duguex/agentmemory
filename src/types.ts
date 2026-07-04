@@ -63,8 +63,12 @@ export interface CompressedObservation {
   imageDescription?: string;
   modality?: "text" | "image" | "mixed";
   agentId?: string;
-  compressionKind: CompressionKind;
-  compressionVersion: 1;
+  // P0-2 fix: optional so iii-engine's state::set writeback does not silently
+  // strip them (engine filters unknown required-shape fields). Both write
+  // paths (buildSyntheticCompression and mem::compress) set these explicitly;
+  // a runtime guard asserts presence before kv.set.
+  compressionKind?: CompressionKind;
+  compressionVersion?: 1;
 }
 
 export type ObservationType =

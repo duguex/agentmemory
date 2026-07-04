@@ -219,6 +219,19 @@ export function registerCompressFunction(
           compressionVersion: 1,
         };
 
+        // P0-2 fix: runtime guard before writeback. iii-engine's state::set
+        // has been observed silently stripping the new fields when the TypeScript
+        // type marked them as required; this assertion catches any future
+        // regression where the field set gets pruned upstream of this function.
+        if (!compressed.compressionKind || !compressed.compressionVersion) {
+          logger.error("Compression marker missing before writeback", {
+            obsId: data.observationId,
+            compressionKind: compressed.compressionKind,
+            compressionVersion: compressed.compressionVersion,
+          });
+          return { success: false, error: "compression_marker_missing" };
+        }
+
         await kv.set(
           KV.observations(data.sessionId),
           data.observationId,
