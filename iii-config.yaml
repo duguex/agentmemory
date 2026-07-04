@@ -18,6 +18,20 @@ workers:
     config:
       adapter:
         name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+      queue_configs:
+        "mem::compress":
+          concurrency: 4
+          max_retries: 3
+          backoff_ms: 1000
+          message_group_field: observationId
+        "mem::graph-extract":
+          concurrency: 2
+          max_retries: 3
+          backoff_ms: 1000
+          message_group_field: sessionId
   - name: iii-pubsub
     config:
       adapter:
