@@ -29,13 +29,19 @@ def auth_headers(secret: str) -> dict:
 async def list_sessions(client: httpx.AsyncClient, secret: str) -> list[dict]:
     r = await client.get(f"{DEFAULT_URL}/agentmemory/sessions", headers=auth_headers(secret))
     r.raise_for_status()
-    return [s for s in r.json() if s.get("id", "").startswith("backfill-") or s.get("project", "").startswith("backfill-")]
+    # Unwrap the {sessions: [...]} envelope returned by api::sessions; fall
+    # back to a bare list shape so older daemon revisions still work.
+    body = r.json()
+    sessions = body.get("sessions", body) if isinstance(body, dict) else body
+    return [s for s in sessions if s.get("id", "").startswith("backfill-") or s.get("project", "").startswith("backfill-")]
 
 
 async def list_observations(client: httpx.AsyncClient, secret: str, session_id: str) -> list[dict]:
     r = await client.get(f"{DEFAULT_URL}/agentmemory/observations", params={"sessionId": session_id}, headers=auth_headers(secret))
     r.raise_for_status()
-    return r.json()
+    # Unwrap the {observations: [...]} envelope returned by api::observations.
+    body = r.json()
+    return body.get("observations", body) if isinstance(body, dict) else body
 
 
 async def post_compress(client: httpx.AsyncClient, secret: str, session_id: str, obs_id: str, sem: asyncio.Semaphore) -> str:
