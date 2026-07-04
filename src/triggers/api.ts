@@ -1483,8 +1483,40 @@ export function registerApiTriggers(
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
+      const sessionId = asNonEmptyString(req.query_params?.["sessionId"]);
       try {
         const result = await sdk.trigger({ function_id: "mem::graph-stats", payload: {} });
+        // P1-4: per-session filter is a thin layer on top of the global
+        // graph stats. Underlying mem::graph-stats still returns global
+        // totals (it has no sessionId concept), so the per-session view
+        // counts observations/concepts/files for that session only and
+        // marks the global fields as 'global' for the caller's clarity.
+        if (sessionId) {
+          const observations = await kv.list<{
+            concepts?: string[];
+            files?: string[];
+          }>(KV.observations(sessionId));
+          const conceptSet = new Set<string>();
+          const fileSet = new Set<string>();
+          for (const o of observations) {
+            for (const c of o.concepts ?? []) conceptSet.add(c);
+            for (const f of o.files ?? []) fileSet.add(f);
+          }
+          return {
+            status_code: 200,
+            body: {
+              ...(result as Record<string, unknown>),
+              sessionId,
+              sessionObservationCount: observations.length,
+              sessionConceptCount: conceptSet.size,
+              sessionFileCount: fileSet.size,
+              global: {
+                totalNodes: (result as { totalNodes?: number }).totalNodes,
+                totalEdges: (result as { totalEdges?: number }).totalEdges,
+              },
+            },
+          };
+        }
         return { status_code: 200, body: result };
       } catch {
         return graphDisabledResponse();
