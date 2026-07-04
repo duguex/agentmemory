@@ -53,16 +53,29 @@ def auth_headers():
 
 
 def api_post(path, body):
+    """POST to the agentmemory REST API.
+
+    Returns the parsed JSON body on success, or None on failure. Callers
+    that need the observation ID (e.g. the ingest-time enqueue block) read
+    `result.get("observationId")`. Boolean coercion is still supported via
+    `bool(api_post(...))` for backwards compatibility with existing call
+    sites that just want a success/failure signal.
+    """
     global _http_session
     if _http_session is None:
         _http_session = requests.Session()
     url = f"{AGENTMEMORY_URL.rstrip('/')}/agentmemory/{path}"
     try:
         r = _http_session.post(url, headers=auth_headers(), json=body, timeout=15)
-        return r.ok
+        if not r.ok:
+            return None
+        try:
+            return r.json()
+        except ValueError:
+            return None
     except Exception as e:
         print(f"  [error] {e}")
-        return False
+        return None
 
 
 def truncate(s, max_len):
@@ -297,7 +310,7 @@ def main():
     # Find session files
     session_files = []
     for session_dir in sorted(glob.glob(os.path.join(SESSIONS_DIR, "-*/"))):
-        for f in sorted(glob.glob(os.path.join(session_dir, "*.jsonl"))):
+        for f in sorted(glob.glob(os.path.join(session_dir, "**/*.jsonl"), recursive=True)):
             session_files.append(f)
     
     if limit:
@@ -337,10 +350,20 @@ def main():
                   f"{session_meta['id'][:12]}  {len(turns):3d} turns")
             continue
         
+        # Collect observation IDs for this session so we can enqueue the
+        # LLM upgrade of /agentmemory/compress after every observation has
+        # landed. Previously backfill-sessions.py only fired observe POSTs
+        # (synthetic compression is written inline by the server), so we'd
+        # accumulate sessions that never picked up the LLM-grade
+        # compression that live hooks get for free. Enqueuing here makes
+        # new backfills naturally flow through the LLM upgrade path.
+        session_obs_ids = []
+        session_id = f"backfill-{session_meta['id']}"
+
         for turn in turns:
             if not turn["user_text"] and not turn["tools"]:
                 continue
-            
+
             total_turns += 1
 
             # Use the original user message timestamp if available, else session start
@@ -355,7 +378,7 @@ def main():
                 obs_ts = datetime.now(timezone.utc).isoformat()
 
             base_payload = {
-                "sessionId": f"backfill-{session_meta['id']}",
+                "sessionId": session_id,
                 "project": session_meta["project"],
                 "cwd": session_meta["cwd"],
             }
@@ -363,7 +386,7 @@ def main():
             # 1. Emit the user prompt as its own conversation observation so
             #    search hits the prompt text directly.
             if turn["user_text"]:
-                ok = api_post("observe", {
+                result = api_post("observe", {
                     **base_payload,
                     "hookType": "prompt_submit",
                     "timestamp": obs_ts,
@@ -371,8 +394,11 @@ def main():
                         "prompt": truncate(turn["user_text"], MAX_TOOL_INPUT),
                     },
                 })
-                if ok:
+                if result:
                     total_sent += 1
+                    obs_id = result.get("observationId")
+                    if obs_id:
+                        session_obs_ids.append(obs_id)
 
             # 2. Emit ONE observation per tool call so each tool is
             #    individually compressed and indexed. Earlier this code
@@ -387,7 +413,7 @@ def main():
                     except (ValueError, TypeError):
                         tool_ts = obs_ts
                 hook_type = "post_tool_failure" if t.get("error") else "post_tool_use"
-                ok = api_post("observe", {
+                result = api_post("observe", {
                     **base_payload,
                     "hookType": hook_type,
                     "timestamp": tool_ts,
@@ -398,15 +424,18 @@ def main():
                         "assistant_text": truncate(turn["assistant_text"], MAX_TOOL_OUTPUT // 2),
                     },
                 })
-                if ok:
+                if result:
                     total_sent += 1
+                    obs_id = result.get("observationId")
+                    if obs_id:
+                        session_obs_ids.append(obs_id)
 
             # 3. Emit the trailing assistant message (no tools after it) as
             #    a prompt_submit observation tagged "conversation" so the
             #    observe handler routes it through the same path as live
             #    user prompts.
             if turn["assistant_text"] and not turn["tools"]:
-                ok = api_post("observe", {
+                result = api_post("observe", {
                     **base_payload,
                     "hookType": "prompt_submit",
                     "timestamp": obs_ts,
@@ -415,8 +444,27 @@ def main():
                         "tool_name": "conversation",
                     },
                 })
-                if ok:
+                if result:
                     total_sent += 1
+                    obs_id = result.get("observationId")
+                    if obs_id:
+                        session_obs_ids.append(obs_id)
+
+        # Ingest-time enqueue: trigger LLM upgrade for each observation in this
+        # session. Sends POST /agentmemory/compress with { sessionId,
+        # observationId } (no `raw` field — the server reads the observation
+        # by ID). Errors are swallowed so one bad observation doesn't abort
+        # the whole backfill; failures show up in the compress queue logs.
+        for obs_id in session_obs_ids:
+            try:
+                requests.post(
+                    f"{AGENTMEMORY_URL.rstrip('/')}/agentmemory/compress",
+                    json={"sessionId": session_id, "observationId": obs_id},
+                    headers={"Authorization": f"Bearer {AGENTMEMORY_SECRET}", "Content-Type": "application/json"},
+                    timeout=30,
+                )
+            except Exception as e:
+                print(f"  enqueue failed for {obs_id}: {e}", file=sys.stderr)
         
         elapsed = time.monotonic() - start_wall
         print(f"  [{i+1:4d}/{len(session_files)}] {session_meta['project']:20s} "
