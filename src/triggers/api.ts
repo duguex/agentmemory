@@ -473,6 +473,33 @@ export function registerApiTriggers(
     config: { api_path: "/agentmemory/compress-file", http_method: "POST" },
   });
 
+  sdk.registerFunction("api::compress",
+    async (req: ApiRequest<{ sessionId: string; observationId: string }>): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const sessionId = asNonEmptyString(body["sessionId"]);
+      const observationId = asNonEmptyString(body["observationId"]);
+      if (!sessionId || !observationId) {
+        return {
+          status_code: 400,
+          body: { error: "sessionId and observationId required" },
+        };
+      }
+      const result = await sdk.trigger({
+        function_id: "mem::compress",
+        payload: { sessionId, observationId },
+        action: TriggerAction.Enqueue({ queue: 'mem::compress' }),
+      });
+      return { status_code: 200, body: result };
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::compress",
+    config: { api_path: "/agentmemory/compress", http_method: "POST" },
+  });
+
   sdk.registerFunction("api::replay::load",
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
