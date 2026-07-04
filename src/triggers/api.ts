@@ -1581,20 +1581,31 @@ export function registerApiTriggers(
   });
 
   sdk.registerFunction("api::graph-extract",
-    async (req: ApiRequest<{ observations: unknown[] }>): Promise<Response> => {
+    async (
+      req: ApiRequest<{ sessionId: string; observationIds: string[] }>,
+    ): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
+      const sessionId = req.body?.sessionId;
+      const observationIds = req.body?.observationIds;
       if (
-        !Array.isArray(req.body?.observations) ||
-        req.body.observations.length === 0
+        typeof sessionId !== "string" ||
+        sessionId.length === 0 ||
+        !Array.isArray(observationIds) ||
+        observationIds.length === 0
       ) {
         return {
           status_code: 400,
-          body: { error: "observations array is required" },
+          body: {
+            error: "sessionId (string) and observationIds (non-empty array) are required",
+          },
         };
       }
       try {
-        const result = await sdk.trigger({ function_id: "mem::graph-extract", payload: req.body });
+        const result = await sdk.trigger({
+          function_id: "mem::graph-extract",
+          payload: { sessionId, observationIds },
+        });
         return { status_code: 200, body: result };
       } catch {
         return graphDisabledResponse();
@@ -1635,7 +1646,10 @@ export function registerApiTriggers(
             try {
               const result = (await sdk.trigger({
                 function_id: "mem::graph-extract",
-                payload: { observations: batch },
+                payload: {
+                  sessionId: sid,
+                  observationIds: batch.map((o) => o.id),
+                },
               })) as { success?: boolean; nodesAdded?: number; edgesAdded?: number };
               if (result?.success) {
                 totalNodes += Number(result.nodesAdded) || 0;
