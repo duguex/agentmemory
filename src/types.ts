@@ -43,6 +43,8 @@ export interface RawObservation {
   agentId?: string;
 }
 
+export type CompressionKind = "synthetic" | "llm";
+
 export interface CompressedObservation {
   id: string;
   sessionId: string;
@@ -61,6 +63,8 @@ export interface CompressedObservation {
   imageDescription?: string;
   modality?: "text" | "image" | "mixed";
   agentId?: string;
+  compressionKind: CompressionKind;
+  compressionVersion: 1;
 }
 
 export type ObservationType =
