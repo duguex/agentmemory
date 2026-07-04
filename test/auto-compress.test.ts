@@ -85,7 +85,7 @@ describe("mem::observe auto-compress gate (#138)", () => {
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
   });
 
-  it("default (AGENTMEMORY_AUTO_COMPRESS unset): does NOT fire mem::compress", async () => {
+  it("default (AGENTMEMORY_AUTO_COMPRESS unset): enqueues mem::compress (gate lives in mem::compress)", async () => {
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
     );
@@ -100,7 +100,12 @@ describe("mem::observe auto-compress gate (#138)", () => {
 
     expect(result.observationId).toBeTruthy();
     const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compress");
-    expect(compressCalls).toHaveLength(0);
+    // Task 5: gate moved out of mem::observe — observe always enqueues
+    // mem::compress; the AUTO_COMPRESS check now happens inside mem::compress.
+    expect(compressCalls).toHaveLength(1);
+    const payload = compressCalls[0]!.data as Record<string, unknown>;
+    expect(payload).toHaveProperty("observationId");
+    expect(payload).toHaveProperty("sessionId");
   });
 
   it("default: stores a synthetic CompressedObservation with the raw-derived fields", async () => {
@@ -146,7 +151,7 @@ describe("mem::observe auto-compress gate (#138)", () => {
     expect(compressCalls).toHaveLength(1);
   });
 
-  it("AGENTMEMORY_AUTO_COMPRESS=false explicitly: does NOT fire mem::compress", async () => {
+  it("AGENTMEMORY_AUTO_COMPRESS=false explicitly: still enqueues mem::compress (gate is in mem::compress, not mem::observe)", async () => {
     process.env["AGENTMEMORY_AUTO_COMPRESS"] = "false";
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
@@ -157,8 +162,14 @@ describe("mem::observe auto-compress gate (#138)", () => {
 
     await sdk.trigger("mem::observe", validPayload());
 
+    // Task 5: even with AUTO_COMPRESS=false, mem::observe still enqueues
+    // mem::compress. mem::compress itself returns {skipped: true} when the
+    // gate is closed. (Action-shape assertion lives in observe-enqueue.test.ts.)
     const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compress");
-    expect(compressCalls).toHaveLength(0);
+    expect(compressCalls).toHaveLength(1);
+    const payload = compressCalls[0]!.data as Record<string, unknown>;
+    expect(payload).toHaveProperty("observationId");
+    expect(payload).toHaveProperty("sessionId");
   });
 });
 
