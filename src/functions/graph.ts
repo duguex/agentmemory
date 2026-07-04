@@ -457,7 +457,7 @@ export function registerGraphFunction(
   provider: MemoryProvider,
 ): void {
   sdk.registerFunction("mem::graph-extract",
-    async (data: { observations: CompressedObservation[] }) => {
+    async (data: { sessionId: string; observationIds: string[] }) => {
       if (!isGraphExtractionEnabled()) {
         return {
           success: false,
@@ -465,12 +465,34 @@ export function registerGraphFunction(
           code: "GRAPH_DISABLED",
         };
       }
-      if (!data.observations || data.observations.length === 0) {
+      if (!data.observationIds || data.observationIds.length === 0) {
         return { success: false, error: "No observations provided" };
       }
 
+      // Drain-time KV read: the producer (events.ts / backfill) enqueues
+      // IDs at session-end time, but the queue may deliver this handler
+      // minutes or days later. Reading from KV at start avoids racing
+      // against a later write or a TTL/eviction between enqueue and
+      // drain. IDs that no longer exist in KV are dropped defensively.
+      const observations: CompressedObservation[] = [];
+      for (const obsId of data.observationIds) {
+        const obs = await kv.get<CompressedObservation>(
+          KV.observations(data.sessionId),
+          obsId,
+        );
+        if (obs) {
+          observations.push(obs);
+        }
+      }
+      if (observations.length === 0) {
+        return {
+          success: false,
+          error: "No observations found in KV for provided IDs",
+        };
+      }
+
       const prompt = buildGraphExtractionPrompt(
-        data.observations.map((o) => ({
+        observations.map((o) => ({
           title: o.title,
           narrative: o.narrative,
           concepts: o.concepts,
@@ -485,7 +507,7 @@ export function registerGraphFunction(
           prompt,
         );
 
-        const obsIds = data.observations.map((o) => o.id);
+        const obsIds = observations.map((o) => o.id);
         const { nodes, edges } = parseGraphXml(response, obsIds);
 
         // #814 v2: targeted name-index lookups replace the O(n) scan

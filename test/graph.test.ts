@@ -80,16 +80,21 @@ describe("Graph Functions", () => {
   let sdk: ReturnType<typeof mockSdk>;
   let kv: ReturnType<typeof mockKV>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     sdk = mockSdk();
     kv = mockKV();
     vi.clearAllMocks();
     registerGraphFunction(sdk as never, kv as never, mockProvider as never);
+    // Seed testObs into KV under its session scope so the drain-time
+    // observer lookup (`mem::graph-extract` now reads by observationId,
+    // mirroring the Task 4 `mem::compress` refactor) finds it.
+    await kv.set("mem:obs:ses_1", testObs.id, testObs);
   });
 
   it("graph-extract creates nodes and edges from XML response", async () => {
     const result = (await sdk.trigger("mem::graph-extract", {
-      observations: [testObs],
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
     })) as { success: boolean; nodesAdded: number; edgesAdded: number };
 
     expect(result.success).toBe(true);
@@ -116,7 +121,8 @@ describe("Graph Functions", () => {
 </relationships>`);
 
     const result = (await sdk.trigger("mem::graph-extract", {
-      observations: [testObs],
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
     })) as { success: boolean; nodesAdded: number; edgesAdded: number };
 
     expect(result.success).toBe(true);
@@ -145,7 +151,8 @@ describe("Graph Functions", () => {
 </relationships>`);
 
     const result = (await sdk.trigger("mem::graph-extract", {
-      observations: [testObs],
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
     })) as { success: boolean; nodesAdded: number; edgesAdded: number };
 
     expect(result.success).toBe(true);
@@ -163,7 +170,10 @@ describe("Graph Functions", () => {
   });
 
   it("graph-query with search returns matching nodes", async () => {
-    await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+    await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
 
     const result = (await sdk.trigger("mem::graph-query", {
       query: "index",
@@ -174,7 +184,10 @@ describe("Graph Functions", () => {
   });
 
   it("graph-query with startNodeId does BFS traversal", async () => {
-    await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+    await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
 
     const nodes = await kv.list<GraphNode>("mem:graph:nodes");
     const fileNode = nodes.find((n) => n.name === "src/index.ts")!;
@@ -190,7 +203,10 @@ describe("Graph Functions", () => {
   });
 
   it("graph-stats returns counts by type", async () => {
-    await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+    await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
 
     const result = (await sdk.trigger("mem::graph-stats", {})) as {
       totalNodes: number;
@@ -206,9 +222,10 @@ describe("Graph Functions", () => {
     expect(result.edgesByType.uses).toBe(1);
   });
 
-  it("graph-extract returns error for empty observations", async () => {
+  it("graph-extract returns error for empty observationIds", async () => {
     const result = (await sdk.trigger("mem::graph-extract", {
-      observations: [],
+      sessionId: "ses_1",
+      observationIds: [],
     })) as { success: boolean; error: string };
 
     expect(result.success).toBe(false);
@@ -497,7 +514,10 @@ describe("Graph Functions", () => {
       // Post-#814 v2 the snapshot is updated incrementally on every
       // extract — no dirty flag bounces. Test asserts that after an
       // extract the snapshot reflects the new nodes/edges.
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
 
       const snap = await kv.get<{
         dirty: boolean;
@@ -510,7 +530,10 @@ describe("Graph Functions", () => {
 
     it("graph-extract maintains name-index for O(1) dedup on re-extract", async () => {
       // First extract creates nodes.
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
       const nameIndex = await kv.get<string>(
         "mem:graph:name-index",
         "file|src/index.ts",
@@ -519,7 +542,10 @@ describe("Graph Functions", () => {
 
       // Re-extract the same observation. With name-index lookup the
       // existing node merges; no duplicates.
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
       const nodes = await kv.list<{ name: string; type: string }>(
         "mem:graph:nodes",
       );
@@ -546,7 +572,10 @@ describe("Graph Functions", () => {
     });
 
     it("graph-reset clears state and writes empty snapshot", async () => {
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
       const result = (await sdk.trigger("mem::graph-reset", {})) as {
         success: boolean;
         cleared: Record<string, number>;
@@ -560,7 +589,10 @@ describe("Graph Functions", () => {
     });
 
     it("graph-reset writes empty snapshot; legacy rows stay as orphans (#825)", async () => {
-      await sdk.trigger("mem::graph-extract", { observations: [testObs] });
+      await sdk.trigger("mem::graph-extract", {
+      sessionId: testObs.sessionId,
+      observationIds: [testObs.id],
+    });
       // Index entries exist after the extract.
       const nameBefore = await kv.get(
         "mem:graph:name-index",
