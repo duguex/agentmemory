@@ -411,12 +411,18 @@ export class IndexPersistence {
       !Number.isInteger(manifest.chars) ||
       manifest.chars < 0
     ) {
-      logger.warn(`index persistence: ${label} shard manifest invalid`);
+      logger.warn(
+        `index persistence: ${label} shard manifest invalid — falling back to rebuild`,
+        { manifest },
+      );
       return null;
     }
     for (const shard of manifest.shards) {
       if (!isValidShardDescriptor(shard)) {
-        logger.warn(`index persistence: ${label} shard manifest invalid`);
+        logger.warn(
+          `index persistence: ${label} shard manifest invalid — falling back to rebuild`,
+          { shard },
+        );
         return null;
       }
     }
@@ -430,29 +436,38 @@ export class IndexPersistence {
     let chars = 0;
     for (const { shard, chunk } of loadedShards) {
       if (typeof chunk !== "string") {
-        logger.warn(`index persistence: ${label} shard missing`, {
-          scope: shard.scope,
-          key: shard.key,
-        });
+        logger.warn(
+          `index persistence: ${label} shard missing — falling back to rebuild`,
+          {
+            scope: shard.scope,
+            key: shard.key,
+          },
+        );
         return null;
       }
       if (chunk.length !== shard.chars) {
-        logger.warn(`index persistence: ${label} shard length mismatch`, {
-          scope: shard.scope,
-          key: shard.key,
-          expected: shard.chars,
-          actual: chunk.length,
-        });
+        logger.warn(
+          `index persistence: ${label} shard length mismatch — falling back to rebuild`,
+          {
+            scope: shard.scope,
+            key: shard.key,
+            expected: shard.chars,
+            actual: chunk.length,
+          },
+        );
         return null;
       }
       chunks.push(chunk);
       chars += chunk.length;
     }
     if (chars !== manifest.chars) {
-      logger.warn(`index persistence: ${label} total length mismatch`, {
-        expected: manifest.chars,
-        actual: chars,
-      });
+      logger.warn(
+        `index persistence: ${label} total length mismatch — falling back to rebuild`,
+        {
+          expected: manifest.chars,
+          actual: chars,
+        },
+      );
       return null;
     }
     return chunks.join("");
