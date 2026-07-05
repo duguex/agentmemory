@@ -448,6 +448,49 @@ export function registerApiTriggers(
     },
   });
 
+  // Manual reindex trigger (issue #1015). When the persisted BM25
+  // covers only a fraction of the sessions in KV, the boot-time
+  // needsRebuild check now triggers a full rebuild asynchronously —
+  // but operators also need a synchronous path so a stuck or
+  // partially-loaded index can be forced on demand. Imports are
+  // deferred to the request handler so this module stays
+  // side-effect-free at registration time.
+  sdk.registerFunction(
+    "api::search-index-rebuild",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      try {
+        const { rebuildIndex, scheduleIndexSave } = await import(
+          "../functions/search.js"
+        );
+        const count = await rebuildIndex(kv);
+        try {
+          scheduleIndexSave();
+        } catch {
+          // Persistence wiring is optional in tests; don't fail the
+          // rebuild on a save-schedule error.
+        }
+        return { status_code: 200, body: { rebuilt: count } };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          status_code: 500,
+          body: { error: `search-index-rebuild failed: ${message}` },
+        };
+      }
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::search-index-rebuild",
+    config: {
+      api_path: "/agentmemory/search/rebuild",
+      http_method: "POST",
+      middleware_function_ids: ["middleware::api-auth"],
+    },
+  });
+
   sdk.registerFunction("api::compress-file", 
     async (req: ApiRequest<{ filePath: string }>): Promise<Response> => {
       const authErr = checkAuth(req, secret);

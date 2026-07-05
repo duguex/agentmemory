@@ -9,7 +9,7 @@
 - **License**: Apache-2.0
 - **Node**: `>=20.0.0`
 - **Engine pin**: `iii-sdk@0.11.2` — do not upgrade past v0.11.2 until the sandbox (v0.11.6+) refactor lands
-- **Key stats**: 53 MCP tools, 129 REST endpoints, 12 hooks, 15 skills, 70+ `mem::*` functions, 1423+ tests, 12 translated READMEs
+- **Key stats**: 53 MCP tools, 130 REST endpoints, 12 hooks, 15 skills, 70+ `mem::*` functions, 1423+ tests, 12 translated READMEs
 
 ---
 
@@ -77,7 +77,7 @@ Benchmarks: 95.2% R@5, 98.6% R@10 on LongMemEval (hybrid). BM25 alone: 86.2% R@5
 | `src/state/` | KV adapter (`kv.ts`), KV scopes (`schema.ts` — 70+ `mem:*` prefixes), BM25 (`search-index.ts`), vector index (`vector-index.ts`), hybrid fusion (`hybrid-search.ts`), reranker (`reranker.ts`), dedup (`dedup.ts`), index persistence (`index-persistence.ts`), keyed mutex (`keyed-mutex.ts`), stemmer/synonyms/CJK segmenter. |
 | `src/mcp/` | MCP server (`server.ts` — REST-route-based), tool registry (`tools-registry.ts` — 10+ version tiers), standalone stdio MCP (`standalone.ts`), JSON-RPC transport (`transport.ts`), REST proxy (`rest-proxy.ts`), in-memory KV fallback (`in-memory-kv.ts`). |
 | `src/hooks/` | 13 standalone Node.js hook scripts. Bundled to both `plugin/scripts/` and `dist/hooks/` by tsdown. |
-| `src/triggers/` | HTTP triggers (`api.ts` — 129 endpoints) + event triggers (`events.ts` — session lifecycle). |
+| `src/triggers/` | HTTP triggers (`api.ts` — 130 endpoints) + event triggers (`events.ts` — session lifecycle). |
 | `src/providers/` | LLM providers (Anthropic, OpenAI, Gemini, OpenRouter, MiniMax, agent-sdk, noop) + embedding providers (local, OpenAI, Voyage, Cohere, Gemini, CLIP). Factory + `ResilientProvider` + `FallbackChainProvider` wrappers. |
 | `src/cli/` | CLI entry (`cli.ts` — start/stop/status/doctor/init/...) + diagnostics, onboarding, splash, `connect/` platform catalog (20+ agent config generators). |
 | `src/health/` | Health monitor — CPU/mem/event-loop/KV probe. |
