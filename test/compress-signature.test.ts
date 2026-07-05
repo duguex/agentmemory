@@ -35,6 +35,7 @@ describe("mem::compress signature change", () => {
         compressionVersion: 1,
       }),
       set: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
     };
 
     const mockProvider = {
@@ -65,6 +66,46 @@ describe("mem::compress signature change", () => {
     expect(kv.set).toHaveBeenCalled();
     const lastSet = kv.set.mock.calls[kv.set.mock.calls.length - 1];
     const written = lastSet[2] as { compressionKind?: string };
+    expect(written.compressionKind).toBe("llm");
+  });
+
+  it("calls kv.delete before kv.set to bypass schema lock", async () => {
+    process.env.AGENTMEMORY_AUTO_COMPRESS = "true";
+    // Track the order of all kv operations to prove delete precedes set.
+    const callOrder: string[] = [];
+    kv.delete.mockImplementation(() => {
+      callOrder.push("delete");
+      return Promise.resolve();
+    });
+    kv.set.mockImplementation(() => {
+      callOrder.push("set");
+      return Promise.resolve();
+    });
+
+    await handler({ observationId: "obs-1", sessionId: "sess-1" });
+
+    // Both must have been called.
+    expect(kv.delete).toHaveBeenCalled();
+    expect(kv.set).toHaveBeenCalled();
+
+    // kv.delete must be invoked with the same (scope, key) as kv.set,
+    // so the subsequent set looks like a first-write under iii-engine
+    // v0.11.2's per-key schema lock.
+    const deleteArgs = kv.delete.mock.calls[0];
+    const setArgs = kv.set.mock.calls[kv.set.mock.calls.length - 1];
+    expect(deleteArgs[0]).toBe(setArgs[0]); // scope
+    expect(deleteArgs[1]).toBe(setArgs[1]); // observationId
+
+    // Order: delete must happen strictly before the final set.
+    const deleteIdx = callOrder.indexOf("delete");
+    const setIdx = callOrder.indexOf("set");
+    expect(deleteIdx).toBeGreaterThanOrEqual(0);
+    expect(setIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeLessThan(setIdx);
+
+    // The writeback payload must include compressionKind: "llm" so
+    // the LLM upgrade is actually visible to downstream consumers.
+    const written = setArgs[2] as { compressionKind?: string };
     expect(written.compressionKind).toBe("llm");
   });
 });

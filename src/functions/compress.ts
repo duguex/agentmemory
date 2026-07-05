@@ -232,6 +232,15 @@ export function registerCompressFunction(
           return { success: false, error: "compression_marker_missing" };
         }
 
+        // Bypass iii-engine v0.11.2 per-key schema lock on overwrite:
+        // delete-then-set makes the kv.set look like a first-write, so
+        // new fields (compressionKind, compressionVersion) are preserved.
+        // Without this, LLM upgrade silently drops the discriminator field,
+        // leaving observations stuck at "synthetic" forever.
+        await kv.delete(
+          KV.observations(data.sessionId),
+          data.observationId,
+        );
         await kv.set(
           KV.observations(data.sessionId),
           data.observationId,
