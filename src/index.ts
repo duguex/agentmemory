@@ -470,7 +470,37 @@ async function main() {
     }
   }
 
-  const needsRebuild = bm25Index.size === 0;
+  // Rebuild decision (issue #1015): the old `bm25Index.size === 0`
+  // check passed whenever the persisted index had any entries — even
+  // a 12-entry / 3-session snapshot from a partial boot. After that
+  // snapshot was loaded, needsRebuild was false and the 646 backfill
+  // observations never entered the index, so /agentmemory/search
+  // returned empty for them. Compare indexed sessions against the
+  // sessions in KV: if >10% of actual sessions have no entries, treat
+  // the index as stale and rebuild. The legacy `size === 0` short
+  // circuit is preserved so empty-on-disk indices still trigger a
+  // first-time build without an extra KV.list() round-trip.
+  const needsRebuild = await (async () => {
+    if (bm25Index.size === 0) return true;
+    try {
+      const indexedSessionIds = bm25Index.getIndexedSessionIds();
+      const actualSessions = await kv.list<import("./types.js").Session>(
+        KV.sessions,
+      );
+      if (actualSessions.length === 0) return false;
+      const missing = actualSessions.filter(
+        (s) => !indexedSessionIds.has(s.id),
+      );
+      const missingRatio = missing.length / actualSessions.length;
+      return missingRatio > 0.1;
+    } catch (err) {
+      console.warn(
+        `[agentmemory] needsRebuild coverage check failed; rebuilding defensively:`,
+        err,
+      );
+      return true;
+    }
+  })();
 
   if (needsRebuild) {
     // Fire-and-forget. rebuildIndex iterates every observation across
@@ -542,7 +572,7 @@ async function main() {
     `Ready. ${embeddingProvider ? "Triple-stream (BM25+Vector+Graph)" : "BM25+Graph"} search active.`,
   );
   bootLog(
-    `REST API: 129 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
+    `REST API: 130 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,

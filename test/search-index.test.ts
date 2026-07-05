@@ -290,4 +290,39 @@ describe("SearchIndex", () => {
     expect(segmentCjk("leading 项目")).toEqual(["leading", "项目"]);
     expect(segmentCjk("项目 trailing")).toEqual(["项目", "trailing"]);
   });
+
+  describe("getIndexedSessionIds", () => {
+    it("returns an empty set for an empty index", () => {
+      expect(index.getIndexedSessionIds().size).toBe(0);
+    });
+
+    it("returns the unique sessionIds of indexed observations", () => {
+      index.add(makeObs({ id: "obs_a", sessionId: "ses_alpha" }));
+      index.add(makeObs({ id: "obs_b", sessionId: "ses_alpha" }));
+      index.add(makeObs({ id: "obs_c", sessionId: "ses_beta" }));
+      const ids = index.getIndexedSessionIds();
+      expect(ids.size).toBe(2);
+      expect(ids.has("ses_alpha")).toBe(true);
+      expect(ids.has("ses_beta")).toBe(true);
+    });
+
+    it("removes a session from the set once its last observation is removed", () => {
+      index.add(makeObs({ id: "obs_a", sessionId: "ses_alpha" }));
+      index.add(makeObs({ id: "obs_b", sessionId: "ses_beta" }));
+      index.remove("obs_a");
+      const ids = index.getIndexedSessionIds();
+      expect(ids.has("ses_alpha")).toBe(false);
+      expect(ids.has("ses_beta")).toBe(true);
+    });
+
+    it("survives serialize/deserialize round-trip", () => {
+      index.add(makeObs({ id: "obs_a", sessionId: "ses_alpha" }));
+      index.add(makeObs({ id: "obs_b", sessionId: "ses_beta" }));
+      const restored = SearchIndex.deserialize(index.serialize());
+      const ids = restored.getIndexedSessionIds();
+      expect(ids.size).toBe(2);
+      expect(ids.has("ses_alpha")).toBe(true);
+      expect(ids.has("ses_beta")).toBe(true);
+    });
+  });
 });

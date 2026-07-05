@@ -163,6 +163,24 @@ export class SearchIndex {
     return this.entries.size;
   }
 
+  /**
+   * Returns the set of sessionIds that have at least one indexed
+   * observation. Used by the boot-time needsRebuild heuristic: a
+   * persisted BM25 that is missing whole sessions (e.g. only 3 of
+   * 649 sessions present) would otherwise pass the `size > 0`
+   * check and silently serve a partial index forever. The set is
+   * recomputed on every call so it stays consistent with add() /
+   * remove() / restoreFrom() / deserialize() without bookkeeping
+   * state.
+   */
+  getIndexedSessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const entry of this.entries.values()) {
+      ids.add(entry.sessionId);
+    }
+    return ids;
+  }
+
   clear(): void {
     this.entries.clear();
     this.invertedIndex.clear();
