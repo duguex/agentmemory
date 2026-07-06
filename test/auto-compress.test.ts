@@ -109,6 +109,10 @@ describe("mem::observe auto-compress gate (#138)", () => {
   });
 
   it("default: stores a synthetic CompressedObservation with the raw-derived fields", async () => {
+    // Pinned to AUTO_COMPRESS=false so we exercise the legacy synthetic fast
+    // path independently of the user's ~/.agentmemory/.env value (which may
+    // set AGENTMEMORY_AUTO_COMPRESS=true and steer observe.ts to the raw path).
+    process.env["AGENTMEMORY_AUTO_COMPRESS"] = "false";
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
     );

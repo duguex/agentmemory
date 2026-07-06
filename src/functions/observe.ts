@@ -305,43 +305,54 @@ export function registerObserveFunction(
           });
         }
 
-        // Step 1: Write synthetic unconditionally (immediate search availability)
-        const synthetic = buildSyntheticCompression(raw);
-        await kv.set(
-          KV.observations(payload.sessionId),
-          obsId,
-          synthetic,
-        );
-        getSearchIndex().add(synthetic);
-        await vectorIndexAddGuarded(
-          synthetic.id,
-          synthetic.sessionId,
-          synthetic.title + " " + (synthetic.narrative || ""),
-          { kind: "synthetic", logId: synthetic.id },
-        );
-        // P1-4: 2 次 stream::set（per-session group + viewer group，与现状一致）
-        await sdk.trigger({
-          function_id: "stream::set",
-          payload: {
-            stream_name: STREAM.name,
-            group_id: STREAM.group(payload.sessionId),
-            item_id: obsId,
-            data: { type: "compressed", observation: synthetic },
-          },
-        });
-        await sdk.trigger({
-          function_id: "stream::set",
-          payload: {
-            stream_name: STREAM.name,
-            group_id: STREAM.viewerGroup,
-            item_id: obsId,
-            data: {
-              type: "compressed",
-              observation: synthetic,
-              sessionId: payload.sessionId,
+        // Step 1: Write the observation.
+        // - AUTO_COMPRESS=true: write raw so mem::compress can read full tool
+        //   data and produce meaningful titles. BM25/vector index will be
+        //   updated when compress writes the compressed version.
+        // - AUTO_COMPRESS=false: write a synthetic placeholder so search has
+        //   something to match against immediately (fast path, no LLM spend).
+        if (isAutoCompressEnabled()) {
+          // Keep raw on disk. Search index won't have this until LLM upgrades
+          // it, but for AUTO_COMPRESS=true users that's the right tradeoff
+          // (quality over immediate-search availability).
+          await kv.set(KV.observations(payload.sessionId), obsId, raw);
+          // Skip search-index add and vector-index add here — they're done
+          // in mem::compress's LLM writeback path with the compressed version.
+        } else {
+          // Existing fast path: synthetic placeholder for immediate search.
+          const synthetic = buildSyntheticCompression(raw);
+          await kv.set(KV.observations(payload.sessionId), obsId, synthetic);
+          getSearchIndex().add(synthetic);
+          await vectorIndexAddGuarded(
+            synthetic.id,
+            synthetic.sessionId,
+            synthetic.title + " " + (synthetic.narrative || ""),
+            { kind: "synthetic", logId: synthetic.id },
+          );
+          // P1-4: 2× stream::set (per-session group + viewer group, matches existing behavior).
+          await sdk.trigger({
+            function_id: "stream::set",
+            payload: {
+              stream_name: STREAM.name,
+              group_id: STREAM.group(payload.sessionId),
+              item_id: obsId,
+              data: { type: "compressed", observation: synthetic },
             },
-          },
-        });
+          });
+          await sdk.trigger({
+            function_id: "stream::set",
+            payload: {
+              stream_name: STREAM.name,
+              group_id: STREAM.viewerGroup,
+              item_id: obsId,
+              data: {
+                type: "compressed",
+                observation: synthetic,
+                sessionId: payload.sessionId,
+              },
+            },
+          });
+        }
 
         // Step 2: Enqueue LLM upgrade unconditionally (gate lives in mem::compress now)
         await sdk.trigger({
