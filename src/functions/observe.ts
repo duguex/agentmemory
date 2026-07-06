@@ -125,6 +125,31 @@ export function registerObserveFunction(
       const pendingImageData = extractedImage;
 
       return withKeyedLock(`obs:${payload.sessionId}`, async () => {
+        // H1 fix: skip synthetic events with no real content. OMP fires
+        // PostToolUse hooks for non-tool events (session::start, prompt_submit,
+        // etc.) carrying empty toolInput/toolOutput and trivial userPrompt.
+        // Without this filter, ~95% of corpus becomes "Synthetic observation
+        // placeholder" entries that pollute search recall. We early-return
+        // before any KV write, stream emit, dedup record, or compress enqueue.
+        const hasRealContent =
+          (typeof raw.toolInput === "string" && raw.toolInput.trim().length > 0) ||
+          (raw.toolInput !== undefined &&
+            raw.toolInput !== null &&
+            typeof raw.toolInput !== "string" &&
+            JSON.stringify(raw.toolInput).length > 2) ||
+          (typeof raw.toolOutput === "string" && raw.toolOutput.trim().length > 0) ||
+          (typeof raw.userPrompt === "string" && raw.userPrompt.trim().length > 5) ||
+          (Array.isArray(raw.images) && raw.images.length > 0) ||
+          pendingImageData !== undefined ||
+          (typeof raw.toolName === "string" && raw.toolName.trim().length > 0);
+        if (!hasRealContent) {
+          logger.info("observe: skipping synthetic empty event", {
+            sessionId: payload.sessionId,
+            hookType: raw.hookType,
+          });
+          return { observationId: null, skipped: true, reason: "empty_content" };
+        }
+
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
           const existing = await kv.list(KV.observations(payload.sessionId));
           if (existing.length >= maxObservationsPerSession) {
