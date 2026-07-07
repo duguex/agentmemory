@@ -14,45 +14,56 @@ interface LabeledQuery {
 }
 
 const LABELED_QUERIES: LabeledQuery[] = [
+  // Query 1: Semantic — VASP workspace exploration
+  // Multiple sessions are about exploring VASP directory structure
   {
-    query: "webui pages overview clusters",
+    query: "VASP directory listing exploration",
     category: "semantic",
     relevantSessions: [
-      "backfill-019eaa5e-7e4a-7000-a096-9a6b7009ef60",
+      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2", // ZFS directory survey
+      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d", // DV directory exploration
     ],
   },
+  // Query 2: Semantic — VASP binary file cleanup (a specific workflow)
   {
-    query: "schema lock bypass delete then set",
+    query: "VASP binary file cleanup CHGCAR WAVECAR",
+    category: "semantic",
+    relevantSessions: [
+      "backfill-019eb9b4-cbcf-7000-96ab-7bcc666ef668", // 7-task cleanup workflow
+    ],
+  },
+  // Query 3: Semantic — VASP data analysis (Python scripting)
+  {
+    query: "VASP data analysis Python read script",
+    category: "semantic",
+    relevantSessions: [
+      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2", // fit_parameter script reading
+      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d", // DV_hh_zfs_data reading
+    ],
+  },
+  // Query 4: Exact — specific tool action phrase
+  {
+    query: "directory listing directory survey",
     category: "exact",
     relevantSessions: [
       "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2",
+      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
     ],
   },
+  // Query 5: Cross-session — should return many backfill sessions
   {
-    query: "create vasp test directory INCAR POSCAR KPOINTS POTCAR",
-    category: "exact",
-    relevantSessions: [
-      "backfill-019eabdf-af68-7000-bad9-646ba2b83ff1",
-      "backfill-019ebf6d-38b6-7000-9787-0548fcb9d7c8",
-    ],
-  },
-  {
-    query: "fix mem::compress writeback delete then set iii-engine",
-    category: "semantic",
-    relevantSessions: [],
-  },
-  {
-    query: "backfill completion summary quality scores",
-    category: "entity",
-    relevantSessions: [
-      "backfill-019eac6d-c0a0-7000-86c8-58fefd61a86d",
-      "backfill-019ee8ea-5140-7000-a457-9c391d5a24f6",
-    ],
-  },
-  {
-    query: "observation empty payload compressionKind llm",
+    query: "VASP",
     category: "cross-session",
     relevantSessions: [],
+  },
+  // Query 6: Entity — file path keyword
+  {
+    query: "Python script",
+    category: "entity",
+    relevantSessions: [
+      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2", // fit_parameter_vs_avg_zfs.py
+      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d", // python scripts in DV
+    ],
   },
 ];
 
