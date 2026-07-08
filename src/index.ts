@@ -394,9 +394,20 @@ async function main() {
     rerankEnabled,
   );
 
-  registerSmartSearchFunction(sdk, kv, (query, limit) =>
-    hybridSearch.search(query, limit),
-  );
+  registerSmartSearchFunction(sdk, kv, (query, limit, options) => {
+    // Phase 2.3: when the smart-search handler triggers mem::expand-query
+    // and forwards the result, route to searchWithExpansion so multiple
+    // reformulations + entity hints can contribute to the BM25/vector
+    // merge. Falls back to plain search when no expansion is provided.
+    if (options?.expansion && typeof options.expansion === "object") {
+      return hybridSearch.searchWithExpansion(
+        query,
+        limit,
+        options.expansion as Parameters<typeof hybridSearch.searchWithExpansion>[2],
+      );
+    }
+    return hybridSearch.search(query, limit);
+  });
   registerRecentSearchesSweepFunction(sdk, kv);
 
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);

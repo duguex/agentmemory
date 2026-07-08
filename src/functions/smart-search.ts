@@ -75,7 +75,11 @@ const LESSON_CONTENT_PREVIEW_CHARS = 240;
 export function registerSmartSearchFunction(
   sdk: ISdk,
   kv: StateKV,
-  searchFn: (query: string, limit: number) => Promise<HybridSearchResult[]>,
+  searchFn: (
+    query: string,
+    limit: number,
+    options?: { expansion?: unknown },
+  ) => Promise<HybridSearchResult[]>,
 ): void {
   sdk.registerFunction("mem::smart-search",
     async (data: {
@@ -223,8 +227,35 @@ export function registerSmartSearchFunction(
         ? Math.min(limit * 3, 300)
         : limit;
 
+      // Query expansion: ask the LLM to produce reformulations + entity
+      // hints before searching. Improves recall on terse or ambiguous
+      // queries. The expansion trigger is best-effort — if it fails or
+      // the LLM times out, we fall back to the plain query. Latency
+      // budget: 200ms for the trigger; longer is treated as a miss.
+      let expansionPayload: unknown = undefined;
+      try {
+        const expansionResult = await Promise.race([
+          sdk.trigger({
+            function_id: "mem::expand-query",
+            payload: { query: data.query },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("expansion_timeout")), 200),
+          ),
+        ]);
+        if (expansionResult && typeof expansionResult === "object") {
+          expansionPayload = expansionResult;
+        }
+      } catch (err) {
+        // Expansion is best-effort; failures are debug noise.
+        logger.info("smart-search: expansion skipped", {
+          query: data.query,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+
       const [hybridResults, lessons] = await Promise.all([
-        searchFn(data.query, overFetchLimit),
+        searchFn(data.query, overFetchLimit, { expansion: expansionPayload }),
         includeLessons
           ? recallLessons(sdk, data.query, lessonLimit, data.project)
           : Promise.resolve([]),
