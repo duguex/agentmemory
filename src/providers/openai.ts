@@ -80,6 +80,12 @@ export class OpenAIProvider implements MemoryProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: this.maxTokens,
+      // temperature=0 reduces variance across runs — same input → same
+      // output. For memory compression this is desirable: we want the
+      // corpus to be stable across re-compression runs, not
+      // re-roll-the-dice each time. Set OPENAI_TEMPERATURE > 0 to
+      // override (useful for diverse reformulation in query expansion).
+      temperature: parseTemperature(getEnvVar("OPENAI_TEMPERATURE")) ?? 0,
       // OpenAI API spec defines `stream` as defaulting to false, so omitting
       // it should yield a JSON response. Some OpenAI-compatible proxies
       // (notably 9Router < 0.4.56 — see decolua/9router#1260) default to
@@ -96,6 +102,39 @@ export class OpenAIProvider implements MemoryProvider {
       body.reasoning_effort = this.reasoningEffort;
     }
 
+    // Retry policy: 2 retries on 429/5xx with exponential backoff
+    // (250ms, 1s). Timeouts and 4xx (except 429) are not retried —
+    // they indicate a request-shape or input problem that won't fix
+    // itself. The ResilientProvider circuit breaker still applies on
+    // top: a string of failures opens the breaker and short-circuits
+    // subsequent calls.
+    const MAX_ATTEMPTS = 3;
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)));
+      }
+      try {
+        const result = await this.attemptCall(url, body);
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message;
+        const retriable =
+          /timeout|timed out|429|5\d\d|fetch failed|ECONNRESET|ENOTFOUND/i.test(
+            msg,
+          );
+        if (!retriable) throw lastError;
+        // otherwise loop and retry
+      }
+    }
+    throw lastError ?? new Error("OpenAI call failed without an error");
+  }
+
+  private async attemptCall(
+    url: string,
+    body: Record<string, unknown>,
+  ): Promise<string> {
     // Bound the request via the shared fetchWithTimeout helper, which
     // owns the AbortController + clearTimeout cleanup for every raw-fetch
     // provider (minimax, openrouter, gemini, openrouter-embed, etc.).
@@ -149,6 +188,16 @@ export class OpenAIProvider implements MemoryProvider {
       `OpenAI returned unexpected response: ${JSON.stringify(data).slice(0, 200)}`,
     );
   }
+}
+
+function parseTemperature(raw: string | null | undefined): number | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return undefined;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return undefined;
+  if (n < 0 || n > 2) return undefined; // OpenAI spec: 0..2
+  return n;
 }
 
 // Resolves the outbound-fetch timeout for the OpenAI LLM path.
