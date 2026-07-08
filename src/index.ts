@@ -378,6 +378,11 @@ async function main() {
 
   const bm25Index = getSearchIndex();
   const graphWeight = parseFloat(getEnvVar("AGENTMEMORY_GRAPH_WEIGHT") || "0.3");
+  // Default rerank on; set RERANK_ENABLED=false to disable. The cross-encoder
+  // (Xenova/ms-marco-MiniLM) adds ~100ms over 20 docs and gives a substantial
+  // boost in MRR by reordering top-N. Disabling only makes sense for latency-
+  // critical paths where the upstream BM25/vector ranking is already good.
+  const rerankEnabled = process.env.RERANK_ENABLED !== "false";
   const hybridSearch = new HybridSearch(
     bm25Index,
     vectorIndex,
@@ -386,6 +391,7 @@ async function main() {
     embeddingConfig.bm25Weight,
     embeddingConfig.vectorWeight,
     graphWeight,
+    rerankEnabled,
   );
 
   registerSmartSearchFunction(sdk, kv, (query, limit) =>
