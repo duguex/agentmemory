@@ -136,6 +136,26 @@ function getText(content: unknown): string {
 		.trim();
 }
 
+// #53: JSON.stringify(error) returns "{}". Detect Error instances
+// and serialize their message + stack so failures are searchable in
+// the corpus. Otherwise fall back to plain JSON.stringify.
+function stringifyResult(result: unknown): string {
+	if (result instanceof Error) {
+		const out: Record<string, string> = {
+			name: result.name,
+			message: result.message,
+		};
+		if (result.stack) out.stack = result.stack;
+		return JSON.stringify(out);
+	}
+	try {
+		return JSON.stringify(result);
+	} catch {
+		// Circular ref or BigInt — fall back to a string repr.
+		return String(result);
+	}
+}
+
 function isInjectContextEnabled(): boolean {
 	return process.env.AGENTMEMORY_INJECT_CONTEXT === "true";
 }
@@ -327,7 +347,11 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		const rawName = "toolName" in event ? event.toolName : undefined;
 		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
-		const toolResult = "result" in event ? JSON.stringify(event.result) : "";
+		// #53: JSON.stringify on a raw Error returns "{}" because
+		// Error.message and .stack are non-enumerable. Detect Error
+		// instances and serialize their message + stack explicitly so
+		// failures are searchable in the corpus.
+		const toolResult = "result" in event ? stringifyResult(event.result) : "";
 		const isError = "isError" in event ? !!event.isError : false;
 		void apiPost("observe", {
 			hookType: isError ? "post_tool_failure" : "post_tool_use",
