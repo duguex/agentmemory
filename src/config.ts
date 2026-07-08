@@ -44,6 +44,19 @@ function loadEnvFile(): Record<string, string> {
     }
     vars[key] = val;
   }
+  // #32: warn if .env uses the legacy AUTO_FORGET_INTERVAL_MS name,
+  // even when the new name is also set. The runtime check in
+  // getAutoForgetIntervalMs only sees the merged result and can't tell
+  // which env file line was responsible.
+  if (
+    !autoForgetLegacyWarned &&
+    vars["AUTO_FORGET_INTERVAL_MS"] !== undefined
+  ) {
+    autoForgetLegacyWarned = true;
+    console.warn(
+      `[agentmemory] AUTO_FORGET_INTERVAL_MS in ${ENV_FILE} is deprecated; rename to AGENTMEMORY_AUTO_FORGET_INTERVAL. The old name will be removed in v0.12.`,
+    );
+  }
   return vars;
 }
 
