@@ -21,6 +21,7 @@ const DATA_DIR = join(homedir(), ".agentmemory");
 const ENV_FILE = join(DATA_DIR, ".env");
 
 let warnPremiumModelShown = false;
+let autoForgetLegacyWarned = false;
 
 function loadEnvFile(): Record<string, string> {
   if (!existsSync(ENV_FILE)) return {};
@@ -154,20 +155,32 @@ function detectProvider(env: Record<string, string>): ProviderConfig {
 }
 
 export function getAutoForgetIntervalMs(): number {
-	// Prefer new env var; fall back to legacy AUTO_FORGET_INTERVAL_MS for backward compat.
-	// Default to 3,600,000 (1h) when unset to preserve pre-existing behavior.
+	// Prefer new env var; fall back to legacy AUTO_FORGET_INTERVAL_MS for
+	// backward compat (#32). Default to 3,600,000 (1h) when unset to
+	// preserve pre-existing behavior.
+	// #33: use the shared safeParseInt helper instead of re-implementing
+	// the parseInt + NaN guard. Same semantics, less code.
+	const legacy = process.env.AUTO_FORGET_INTERVAL_MS;
 	const val =
 		getEnvVar("AGENTMEMORY_AUTO_FORGET_INTERVAL") ||
-		process.env.AUTO_FORGET_INTERVAL_MS ||
+		legacy ||
 		"";
-	const parsed = parseInt(val, 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 3_600_000;
+	// #32: warn the user once per process that the legacy env is in
+	// use. Once the AGENTMEMORY_AUTO_FORGET_INTERVAL name is well
+	// established we can remove the fallback entirely.
+	if (legacy && !autoForgetLegacyWarned) {
+		autoForgetLegacyWarned = true;
+		console.warn(
+			"[agentmemory] AUTO_FORGET_INTERVAL_MS is deprecated; rename to AGENTMEMORY_AUTO_FORGET_INTERVAL. The old name will be removed in v0.12.",
+		);
+	}
+	return safeParseInt(val, 3_600_000) || 3_600_000;
 }
 
 export function getEvictIntervalMs(): number {
+	// #33: use safeParseInt for consistency with the rest of the file.
 	const val = getEnvVar("AGENTMEMORY_EVICT_INTERVAL") || "";
-	const parsed = parseInt(val, 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+	return safeParseInt(val, 0);
 }
 
 export function loadConfig(): AgentMemoryConfig {
