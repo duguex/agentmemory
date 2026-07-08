@@ -25,16 +25,11 @@ function secret(): string {
 	return process.env.AGENTMEMORY_SECRET ?? "";
 }
 
-// Warn if sending bearer token over plaintext HTTP (P2-015)
-function maybeWarnPlaintextBearer(): void {
-	const url = process.env.AGENTMEMORY_URL ?? "";
-	if (!url.startsWith("http://")) return;
-	if (!process.env.AGENTMEMORY_SECRET) return;
-	if (url.includes("localhost") || url.includes("127.0.0.1") || url.includes("::1")) return;
-	// Also allow private network IPs over plaintext (same security boundary)
-	if (url.match(/https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/)) return;
-	console.warn("[agentmemory] Sending bearer token over plaintext HTTP to " + url + ". Use https:// in production.");
-}
+// #29: plaintext-bearer warn was originally called at module load
+// time. The runtime version in authHeaders() is more accurate (it
+// re-evaluates AGENTMEMORY_URL on every request, catching env vars
+// set after import). The top-level call has been removed and so has
+// the now-unused maybeWarnPlaintextBearer() helper.
 
 function authHeaders(): Record<string, string> {
 	const h: Record<string, string> = { "Content-Type": "application/json" };
@@ -156,7 +151,29 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	if (isSdkChild()) return;
 	let sessionId = `auto-${Date.now().toString(36)}`;
 	let currentProject = process.cwd();
+	// #27 + #55: serverOk was a sticky latch — once false, every
+	// subsequent hook was silently dropped for the rest of the session.
+	// Replace with a TTL-cached health probe that's re-checked at most
+	// every 5s, so a recovered daemon picks up traffic within seconds.
 	let serverOk = false;
+	let lastHealthCheckMs = 0;
+	let lastHealthOk = false;
+	const HEALTH_CHECK_INTERVAL_MS = 5000;
+	async function ensureServerOk(): Promise<boolean> {
+		const now = Date.now();
+		if (now - lastHealthCheckMs < HEALTH_CHECK_INTERVAL_MS && lastHealthCheckMs !== 0) {
+			return lastHealthOk;
+		}
+		lastHealthCheckMs = now;
+		try {
+			const health = await apiGet<{ status?: string; health?: { status?: string } }>("health");
+			lastHealthOk = !!(health && (health.status === "healthy" || health.health?.status === "healthy"));
+		} catch {
+			lastHealthOk = false;
+		}
+		serverOk = lastHealthOk;
+		return lastHealthOk;
+	}
 	let sessionInjected = false;
 
 	// ── Tools ───────────────────────────────────────────────────
@@ -229,7 +246,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── User prompt capture ────────────────────────────────────
 
 	pi.on("turn_start", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
+		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		if (!("messages" in event) || !Array.isArray(event.messages)) return;
 		const lastMsg = event.messages[event.messages.length - 1];
 		if (!lastMsg || typeof lastMsg !== "object") return;
@@ -249,7 +266,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Subagent tracking ─────────────────────────────────────
 
 	pi.on("agent_start", async () => {
-		if (!serverOk) return;
+		if (!(serverOk || (await ensureServerOk()))) return;
 		void apiPost("observe", {
 			hookType: "subagent_start",
 			sessionId,
@@ -263,7 +280,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Compaction tracking ───────────────────────────────────
 
 	pi.on("auto_compaction_start", async () => {
-		if (!serverOk) return;
+		if (!(serverOk || (await ensureServerOk()))) return;
 		void apiPost("observe", {
 			hookType: "pre_compact",
 			sessionId,
@@ -278,7 +295,10 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
-		setTimeout(resolve, 3000);
+		// #56: .unref() so the engine can exit even if the server takes
+		// >3s to respond. Without this, a slow agentmemory daemon blocks
+		// the engine's exit by 3s.
+		setTimeout(resolve, 3000).unref();
 		await Promise.race([
 			apiPost("session/end", { sessionId, reason: "shutdown" }),
 			promise,
@@ -288,7 +308,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Tool execution capture ──────────────────────────────────
 
 	pi.on("tool_execution_start", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
+		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		const rawName = "toolName" in event ? event.toolName : undefined;
 		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
 		const toolInput = "input" in event ? JSON.stringify(event.input) : "";
@@ -304,7 +324,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
 	// P1-008: check isError to distinguish success/failure
 	pi.on("tool_execution_end", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
+		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		const rawName = "toolName" in event ? event.toolName : undefined;
 		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
 		const toolResult = "result" in event ? JSON.stringify(event.result) : "";
@@ -322,7 +342,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Memory injection via before_agent_start (P1-006: gated by AGENTMEMORY_INJECT_CONTEXT) ─
 
 	pi.on("before_agent_start", async (event: unknown) => {
-		if (!serverOk || sessionInjected || !event || typeof event !== "object") return;
+		if (!(serverOk || (await ensureServerOk())) || sessionInjected || !event || typeof event !== "object") return;
 		if (!isInjectContextEnabled()) return;
 		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) return;
 		const result = await apiPost<{ results?: Array<{ title?: string; type?: string; narrative?: string }> }>(
@@ -335,8 +355,16 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 			(r) => `  [${r.type ?? "memory"}] ${r.title ?? ""}${r.narrative ? ` — ${r.narrative}` : ""}`,
 		);
 		const recallBlock = `## Recalled from memory\n${lines.join("\n")}`;
-		if ("systemPrompt" in event && typeof event.systemPrompt === "string") {
-			return { systemPrompt: event.systemPrompt + "\n\n" + recallBlock };
+		// #25: when systemPrompt is "" (or whitespace-only), use the
+		// recall block directly. Without the trim, we'd produce
+		// "\n\n## Recalled..." as the entire system prompt, which
+		// becomes just whitespace + section header — useless for the
+		// agent.
+		const existing = ("systemPrompt" in event && typeof event.systemPrompt === "string")
+			? event.systemPrompt.trim()
+			: "";
+		if (existing) {
+			return { systemPrompt: `${existing}\n\n${recallBlock}` };
 		}
 		return { systemPrompt: recallBlock };
 	});
@@ -344,7 +372,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Turn capture (P1-009: hookType = "notification", not "post_tool_use") ──
 
 	pi.on("turn_end", async (event: unknown) => {
-		if (!serverOk || !event || typeof event !== "object") return;
+		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		if (!("messages" in event) || !Array.isArray(event.messages)) return;
 		// P2-013: iterate in-place instead of cloning the array
 		for (let i = event.messages.length - 1; i >= 0; i--) {
