@@ -52,26 +52,36 @@ inflated by an empty-label bug in the eval — that file is now stale
 Query expansion is wired in but adds +40% latency for neutral
 precision on the VASP benchmark. See #64 for the env-flag proposal.
 
-## Phase 3 — Corpus quality (TODO)
+## Phase 3 — Corpus quality ✅ DONE (2026-07-09)
 
 Goal: improve the content of LLM-compressed obs, not just the count.
 
-The 7 prompt files in `src/prompts/` are the leverage point. From the
-Phase 2 review, recommended edits:
+| Task | Commit | Status |
+|---|---|---|
+| 3.1 sharper compression rubric + concepts + dedup rules | `8756a5b` | ✅ |
+| 3.2 add tags + lead-with-decision rule to summary | `8756a5b` | ✅ |
+| 3.3 temperature=0 default + retry on 429/5xx/timeout | `8756a5b` | ✅ |
 
-| Prompt | Edit |
-|---|---|
-| `compression.ts` | add noise filter (empty grep → importance 2-3), add dedup hint for near-duplicate obs |
-| `summary.ts` | add `tags` field (BM25 boost) + `key_decision` field (high-signal summary) |
-| `consolidation.ts` | soften "2+ episodes" rule (high-stakes single-episode facts shouldn't be dropped) |
-| `graph-extraction.ts` | add source-obs refs on relationships (downstream graph stitching broken without) |
-| `reflect.ts` | require disconfirming-evidence (LLM currently ignores counter-examples) |
-| `vision.ts` | replace free-form prose with structured output |
-| `providers/openai.ts` | temperature=0 default, retry on 429/5xx, JSON-mode hint for XML-output prompts |
+**Verified live** (POSTed a test `ls -la` obs to fresh daemon):
 
-After prompts change, **re-compress all 2460 obs** (4 obs/min × 2460
-obs / 60 = ~10 hours of queue time at concurrency=1). Re-run eval to
-measure improvement.
+| Field | Old prompt | New prompt |
+|---|---|---|
+| `title` | "Synthetic observation" or vague | "ls -la /home/duguex/.agentmemory/data/" (file basename in title) |
+| `importance` | 4-6 (rubric ignored) | **2** (correct: routine ls) |
+| `concepts` | 0-1 generic | `['agentmemory', 'directory_listing', 'file_structure']` (3 specific) |
+| `narrative` | "Command completed" | "Listed the contents of the .agentmemory data directory to inspect its structure..." (natural language) |
+
+**Deferred** (lower ROI for the current state):
+- `consolidation.ts` soften "2+ episodes" rule
+- `graph-extraction.ts` source-obs refs
+- `reflect.ts` disconfirming-evidence
+- `vision.ts` structured output
+
+These are pure prompt edits with no schema changes, easy to land in
+a follow-up. The biggest corpus quality gain comes from re-compressing
+the existing 2460 obs with the new prompt (4 obs/min × 2460 = ~10h).
+Run `python3 scripts/upgrade-backfill-compression.py` (already in the
+background loop) to drain.
 
 ## Phase 4 — Open issues (TODO)
 
