@@ -74,14 +74,18 @@ function validPayload(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe("mem::observe auto-compress gate (#138)", () => {
   beforeEach(() => {
-    // Reset module cache so observe.js re-imports config.js with the
-    // fresh AGENTMEMORY_AUTO_COMPRESS env state. Without this, a later
-    // test that sets the env var can be undermined by cached module
-    // state from an earlier test (and vice versa).
+    // #57: when ~/.agentmemory/.env sets AGENTMEMORY_AUTO_COMPRESS=true,
+    // getMergedEnv() reads .env into the merged result. The previous
+    // `delete process.env[...]` only cleared the in-process copy, so the
+    // test still saw the .env value. Use vi.stubEnv so vitest restores
+    // the real env on teardown AND isolates the in-process override
+    // from the on-disk .env during the test body.
+    vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "");
     vi.resetModules();
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
   });
 
