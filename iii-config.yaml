@@ -24,8 +24,8 @@ workers:
       queue_configs:
         "mem::compress":
           concurrency: 1
-          max_retries: 3
-          backoff_ms: 5000
+          max_retries: 1
+          backoff_ms: 2000
           message_group_field: observationId
         "mem::graph-extract":
           concurrency: 2

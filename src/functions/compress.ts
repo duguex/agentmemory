@@ -88,7 +88,19 @@ export function registerCompressFunction(
         data.observationId,
       );
       if (!raw) {
-        throw new Error(`observation not found: ${data.observationId}`);
+        // Orphan: observation was deleted between enqueue and drain.
+        // Ack with success so the engine doesn't retry or DLQ — the
+        // obs is gone, retrying achieves nothing. Logs a warn for
+        // observability.
+        logger.warn("compress: orphan observation, skipping", {
+          obsId: data.observationId,
+          sessionId: data.sessionId,
+        });
+        return {
+          success: true,
+          skipped: true,
+          reason: "orphan_observation",
+        };
       }
 
       // P1-1 guard: already LLM-compressed → skip. Synthetic observations
