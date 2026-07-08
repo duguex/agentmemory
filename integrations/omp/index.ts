@@ -33,6 +33,18 @@ function secret(): string {
 
 function authHeaders(): Record<string, string> {
 	const h: Record<string, string> = { "Content-Type": "application/json" };
+	return withAuth(h);
+}
+
+// #28: GET requests with no body shouldn't advertise a Content-Type
+// — some strict reverse proxies respond 400/415 to a GET that sends
+// "Content-Type: application/json" without a body. Reuse the same
+// auth + plaintext-bearer warning as the POST path.
+function authHeadersForGet(): Record<string, string> {
+	return withAuth({});
+}
+
+function withAuth(h: Record<string, string>): Record<string, string> {
 	const s = secret();
 	if (s) {
 		h.Authorization = `Bearer ${s}`;
@@ -63,7 +75,8 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T | null> {
 	try {
 		if (!httpBreaker.canRequest()) return null;
 		const base = baseUrl().replace(/\/+$/, "");
-		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
+		const pathHasAgentMemory = /\/agentmemory\/?$/.test(new URL(base).pathname);
+		const prefix = pathHasAgentMemory ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "POST",
@@ -88,11 +101,18 @@ async function apiGet<T>(path: string): Promise<T | null> {
 	try {
 		if (!httpBreaker.canRequest()) return null;
 		const base = baseUrl().replace(/\/+$/, "");
-		const prefix = base.includes("/agentmemory") ? "/" : "/agentmemory/";
+		// #54: was `base.includes("/agentmemory")` — substring match
+		// that misfires when the host itself contains "agentmemory"
+		// (e.g. https://agentmemory.example.com would skip the
+		// /agentmemory/ prefix). Use a proper path-segment check
+		// instead: if the path already ends with /agentmemory or
+		// /agentmemory/, no prefix; otherwise add /agentmemory/.
+		const pathHasAgentMemory = /\/agentmemory\/?$/.test(new URL(base).pathname);
+		const prefix = pathHasAgentMemory ? "/" : "/agentmemory/";
 		const url = `${base}${prefix}${path}`;
 		const response = await fetch(url, {
 			method: "GET",
-			headers: authHeaders(),
+			headers: authHeadersForGet(),
 			signal: AbortSignal.timeout(3000),
 		});
 		if (!response.ok) {
@@ -170,7 +190,21 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// Prevent recursive observation in subagents that inherit this extension
 	if (isSdkChild()) return;
 	let sessionId = `auto-${Date.now().toString(36)}`;
+	// #21: currentProject was set once at session start and never
+	// refreshed. When the user `cd`s into a different directory mid-
+	// session, every subsequent hook reported the stale project.
+	// resolveProject() re-reads cwd on every call so it tracks the
+	// user's current working directory. AGENTMEMORY_PROJECT_NAME env
+	// var still wins for explicit overrides.
 	let currentProject = process.cwd();
+	function resolveProject(): string {
+		return process.env.AGENTMEMORY_PROJECT_NAME || process.cwd();
+	}
+	// #52: Promise.withResolvers polyfill holder. The setTimeout in
+	// session_shutdown needs a resolver to race against apiPost; we
+	// can't declare a local Promise in the handler (handlers can
+	// re-enter), so hoist the resolver.
+	let shutdownResolve: () => void = () => {};
 	// #27 + #55: serverOk was a sticky latch — once false, every
 	// subsequent hook was silently dropped for the rest of the session.
 	// Replace with a TTL-cached health probe that's re-checked at most
@@ -256,10 +290,13 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async () => {
 		sessionId = `auto-${Date.now().toString(36)}`;
-		currentProject = process.cwd();
+		// #21: don't pin currentProject here — resolveProject() reads
+		// cwd on every call so cd mid-session is tracked.
+		currentProject = resolveProject();
 		sessionInjected = false;
 		// P1-011: single HTTP call, no separate health check
-		const result = await apiPost("session/start", { sessionId, project: currentProject, cwd: currentProject });
+		const project = resolveProject();
+		const result = await apiPost("session/start", { sessionId, project, cwd: project });
 		serverOk = result !== null;
 	});
 
@@ -276,24 +313,48 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		void apiPost("observe", {
 			hookType: "prompt_submit",
 			sessionId,
-			project: currentProject,
-			cwd: currentProject,
+			project: resolveProject(),
+			cwd: resolveProject(),
 			timestamp: new Date().toISOString(),
 			data: { tool_name: "user_prompt", tool_input: truncate(text, 2000), prompt: truncate(text, 500) },
 		});
 	});
 
 	// ── Subagent tracking ─────────────────────────────────────
+	// #22: agent_start used to always tag as "subagent_start" — but
+	// the very first agent_start in a session IS the main agent.
+	// Track depth via a counter: the first start is the primary
+	// agent, every subsequent nested one is a subagent. Reset on
+	// session_start (already happens because sessionInjected=false).
+	// #23: agent_end was a no-op. Add an emit that mirrors agent_start
+	// so the corpus has matching start/end pairs for every agent.
+	let agentDepth = 0;
 
 	pi.on("agent_start", async () => {
 		if (!(serverOk || (await ensureServerOk()))) return;
+		const isMainAgent = agentDepth === 0;
+		agentDepth++;
 		void apiPost("observe", {
-			hookType: "subagent_start",
+			hookType: isMainAgent ? "agent_start" : "subagent_start",
 			sessionId,
-			project: currentProject,
-			cwd: currentProject,
+			project: resolveProject(),
+			cwd: resolveProject(),
 			timestamp: new Date().toISOString(),
-			data: { tool_name: "subagent_start" },
+			data: { tool_name: isMainAgent ? "agent_start" : "subagent_start" },
+		});
+	});
+
+	pi.on("agent_end", async () => {
+		if (!(serverOk || (await ensureServerOk()))) return;
+		const isMainAgent = agentDepth === 1;
+		agentDepth = Math.max(0, agentDepth - 1);
+		void apiPost("observe", {
+			hookType: isMainAgent ? "agent_end" : "subagent_end",
+			sessionId,
+			project: resolveProject(),
+			cwd: resolveProject(),
+			timestamp: new Date().toISOString(),
+			data: { tool_name: isMainAgent ? "agent_end" : "subagent_end" },
 		});
 	});
 
@@ -304,8 +365,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		void apiPost("observe", {
 			hookType: "pre_compact",
 			sessionId,
-			project: currentProject,
-			cwd: currentProject,
+			project: resolveProject(),
+			cwd: resolveProject(),
 			timestamp: new Date().toISOString(),
 			data: { tool_name: "compaction_start" },
 		});
@@ -314,11 +375,14 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Session shutdown (always fires, even if server was down) ─
 
 	pi.on("session_shutdown", async () => {
-		const { promise, resolve } = Promise.withResolvers<void>();
+		// #52: Promise.withResolvers is Node 22+. We need to support
+		// Node 18+ in the OMP integration. Inline a 4-line shim
+		// that does the same thing without runtime branching.
+		const promise = new Promise<void>((resolve) => { shutdownResolve = resolve; });
 		// #56: .unref() so the engine can exit even if the server takes
 		// >3s to respond. Without this, a slow agentmemory daemon blocks
 		// the engine's exit by 3s.
-		setTimeout(resolve, 3000).unref();
+		setTimeout(shutdownResolve, 3000).unref();
 		await Promise.race([
 			apiPost("session/end", { sessionId, reason: "shutdown" }),
 			promise,
@@ -335,8 +399,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		void apiPost("observe", {
 			hookType: "pre_tool_use",
 			sessionId,
-			project: currentProject,
-			cwd: currentProject,
+			project: resolveProject(),
+			cwd: resolveProject(),
 			timestamp: new Date().toISOString(),
 			data: { tool_name: toolName, tool_input: truncate(toolInput, 500) },
 		});
@@ -356,8 +420,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		void apiPost("observe", {
 			hookType: isError ? "post_tool_failure" : "post_tool_use",
 			sessionId,
-			project: currentProject,
-			cwd: currentProject,
+			project: resolveProject(),
+			cwd: resolveProject(),
 			timestamp: new Date().toISOString(),
 			data: { tool_name: toolName, tool_output: truncate(toolResult, 2000), error: isError || undefined },
 		});
@@ -408,8 +472,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 			void apiPost("observe", {
 				hookType: "notification",
 				sessionId,
-				project: currentProject,
-				cwd: currentProject,
+				project: resolveProject(),
+				cwd: resolveProject(),
 				timestamp: new Date().toISOString(),
 				data: { tool_name: "conversation", tool_output: truncate(text, 4000) },
 			});
@@ -418,8 +482,4 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	});
 
 	// ── Session end (session_shutdown already sends session/end) ──
-
-	pi.on("agent_end", async () => {
-		// no-op: session/end is sent by session_shutdown
-	});
 }
