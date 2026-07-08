@@ -99,28 +99,40 @@ def main():
     snapshotted = 0
     errors = 0
     start = time.time()
-    offset = 0
     last_report = start
     rps_window_start = start
     rps_window_count = 0
+    seen_ids: set[str] = set()  # avoid re-processing same snapshot lines
 
+    # DLQ pagination uses offset, but messages we've already discarded
+    # are no longer in the list — so the offset doesn't keep moving
+    # forward. Always re-page from offset 0, dedup against seen_ids.
     while discarded + errors < target:
-        page = page_dlq(offset, args.batch_size)
-        if not page:
-            break
+        page = page_dlq(0, args.batch_size)
+        # Dedupe against already-processed ids
+        fresh = [m for m in page if m["id"] not in seen_ids]
+        if not fresh:
+            # No new messages — either we're done or the list is stable
+            # with a small set we already snapshotted.
+            if not page:
+                break
+            # Drain whatever's left in the list, even if repeated
+            fresh = page
+        for m in fresh:
+            seen_ids.add(m["id"])
 
         # 1. Snapshot first
         with open(snapshot_path, "a") as f:
-            for m in page:
+            for m in fresh:
                 f.write(json.dumps(m, ensure_ascii=False) + "\n")
                 snapshotted += 1
 
         # 2. Discard (skip if dry-run)
         if args.dry_run:
-            discarded += len(page)
-            print(f"  [dry-run] skipped discard for {len(page)} ids")
+            discarded += len(fresh)
+            print(f"  [dry-run] skipped discard for {len(fresh)} ids")
         else:
-            for m in page:
+            for m in fresh:
                 n = discard(m["id"])
                 discarded += n
                 rps_window_count += 1
@@ -132,7 +144,6 @@ def main():
                     rps_window_start = time.time()
                     rps_window_count = 0
 
-        offset += len(page)
         now = time.time()
         if now - last_report > 5:
             rate = discarded / (now - start) if now > start else 0
@@ -141,6 +152,10 @@ def main():
             last_report = now
 
         if args.limit and discarded >= args.limit:
+            break
+
+        # Safety: if page returns same set we already saw, give up
+        if len(fresh) < len(page):
             break
 
     elapsed = time.time() - start
