@@ -220,6 +220,32 @@ backoff_ms: 2000      # 2s between retries
 message_group_field: observationId   # FIFO per-obs ordering
 ```
 
+### Per-obs vs batch LLM calls
+
+`mem::compress` issues **one LLM call per observation**. Each
+call is `POST /v1/chat/completions` with a single obs's text in
+the user prompt and a request for one `<observation>` XML
+response. The 5s/obs cost is dominated by:
+
+- 30-60s cold load on the first request after Ollama unloads
+  the model (amortized to ~0s over many obs)
+- ~3-5s inference per obs on V100 32GB with 22GB qwen3.6:35b
+- ~1s of orchestration overhead (KV read/write, BM25 + vector
+  re-index)
+
+This is the right call for **correctness** — every obs is a
+self-contained LLM transaction, parse failure on one obs
+doesn't affect the others, and the FIFO ordering per
+observationId is preserved. It's the wrong call for
+**throughput** — see "Open issue #1" below.
+
+A batch mode would buffer N obs and send one chat completion
+with all N in the user prompt, parsing N `<observation>`
+responses out of the result. Trade-off: larger prompts → more
+VRAM, but one cold-load amortizes across N obs. This is a
+known design alternative, not implemented. See
+`docs/known-issues.md` #1.
+
 ### Queue hold: "LLM is unavailable" vs "request is broken"
 
 When the Ollama endpoint returns an error, `mem::compress` has to
