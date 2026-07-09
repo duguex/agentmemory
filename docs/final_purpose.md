@@ -1,69 +1,62 @@
-# Final Purpose
+# 最终目标
 
-> Status against the original 7/2 design goals, as of 2026-07-10.
+> 7/2 设计目标的当前状态, 更新于 2026-07-10。
 
-## Original goals (set 2026-07-02)
+## 原始目标 (2026-07-02 定)
 
-1. **Process OMP/Oh-My-Pi chat history into high-quality memories**
-   that are retrievable and usable for context injection.
-2. **Adapt to different coding agents.**
+1. **把 OMP/Oh-My-Pi 聊天历史处理成高质量记忆**, 可检索,
+   可用于相关内容的上下文注入。
+2. **适配不同编程 agent。**
 
-## Original technical approach
+## 原始技术路线
 
-1. **Unify** the chat history and live-session processing pipelines
-   so the backfill reuses the live path as much as possible.
-2. **Use a queue** to handle high LLM volume, accepting high LLM
-   usage to pursue memory quality.
+1. **统一**聊天历史和活跃 session 的处理流水线, 让 backfill
+   尽可能复用活跃 session 路径。
+2. **用队列**处理大量 LLM 请求, 接受高 LLM 用量, 追求记忆
+   质量。
 
-## Status today
+## 当前状态
 
-| # | Goal | Status | Evidence |
+| # | 目标 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | High-quality retrievable memories | **Mostly met, retrieval quality mediocre** | 2460 backfill obs, 100% LLM-compressed. Eval R@10=29.6%, MRR=0.224 on 16 hand-labeled queries. Best queries hit 100% (VASP binary cleanup, find large files). |
-| 2 | Adapt to different agents | **Partially met** | OMP integration is fully wired. Claude/Codex/OpenCode hooks exist but were not exercised during the test cycle. |
-| T1 | Unified backfill + live pipeline | **Met** | `scripts/backfill-sessions.py` reuses the `/observe` endpoint. The LLM call is the same `mem::compress` handler. See `docs/architecture.md` for the two-path diagram. |
-| T2 | Queue for high LLM volume | **Met, with a known limitation** | The `mem::compress` queue absorbs latency, retries, and now LLM-unavailability (commit `426d1fa`). However, **per-obs LLM call** is the throughput ceiling — see "Known limitations" below. |
+| 1 | 高质量可检索记忆 | **基本达成, 检索质量一般** | 2460 条 backfill obs, 100% LLM 压缩。Eval R@10=29.6%, MRR=0.224 (16 个 hand-labeled 查询)。最好查询 100% (VASP binary cleanup, find large files)。 |
+| 2 | 适配不同 agent | **部分达成** | OMP 集成完全接好。Claude/Codex/OpenCode hooks 存在但测试期间没跑过。 |
+| T1 | 统一 backfill + 实时流水线 | **达成** | `scripts/backfill-sessions.py` 复用 `/observe` 端点。LLM 调用是同一个 `mem::compress` handler。见 `docs/architecture.md` 的两条路径图。 |
+| T2 | 用队列处理高 LLM 流量 | **达成, 有已知限制** | `mem::compress` 队列 absorb 延迟、重试、还有 LLM 不可用 (commit `426d1fa`)。**per-obs LLM 调用**是吞吐瓶颈 —— 见下面"已知限制"。 |
 
-## Known limitations affecting these goals
+## 影响这些目标的已知限制
 
-These are not blockers but are worth knowing before claiming
-"the goal is met":
+这些不是 blocker, 但在声称"目标达成"前值得知道:
 
-- **Retrieval quality (R@10=29.6%) is below typical production
-  targets (≥50%)**. Root causes: the GT is sparse (16 queries,
-  5 categories), the embedding model is generic (nomic-embed
-  768d), and ~2460 obs was processed with the old prompt.
-  Re-compressing with the Phase 3 prompt (commit `8756a5b`)
-  is the highest-leverage remaining work.
-- **No batch LLM calls**. Each obs is its own LLM call, which is
-  the right call for correctness but the wrong call for
-  throughput. With 1 obs = 1 call and ~5s/obs, the queue can
-  drain ~12 obs/min peak. A batch mode would let one cold-load
-  process N obs in a single inference.
-- **24GB VRAM permanently reserved while the daemon is running**.
-  Ollama's 5-min unload only kicks in if the queue is empty for
-  5+ minutes. This is by design (commit `0b43c4c`), but it's
-  worth knowing if you share the GPU with other workloads.
+- **检索质量 (R@10=29.6%) 低于典型生产目标 (≥50%)**。根因:
+  GT 稀疏 (16 查询, 5 类), embedding 模型通用 (nomic-embed
+  768d), ~2460 obs 用旧 prompt 处理的。用 Phase 3 prompt
+  (commit `8756a5b`) 重新压缩是剩余工作中最高杠杆的一项。
+- **没有批量 LLM 调用**。每条 obs 是独立的 LLM 调用, 这对
+  正确性是对的但对吞吐是错的。1 obs = 1 调用, ~5s/obs,
+  队列峰值能排 ~12 obs/min。批量模式让一次冷加载处理 N 条 obs
+  在一次推理里。
+- **daemon 运行时 24GB VRAM 永远占着**。Ollama 5 分钟卸载
+  只在队列空 5+ 分钟时触发。这是 commit `0b43c4c` 的设计选择,
+  但如果 GPU 跟其他工作共享就值得知道。
 
-## What would close the gap
+## 怎么收尾 gap
 
-If you want R@10 ≥ 50% and don't want to keep iterating:
+如果想要 R@10 ≥ 50% 但不想继续迭代:
 
-1. **Re-compress 2460 obs with the Phase 3 prompt** (~10 hours
-   background). Run `scripts/upgrade-backfill-compression.py`.
-2. **Expand the GT to 30-50 queries** so the eval signal
-   stabilizes. 16 is too few.
-3. **Try a larger embedding model** (e.g. `bge-large-en-v1.5`
-   1024d). Reindex is a separate commit.
+1. **用 Phase 3 prompt 重新压缩 2460 条 obs** (~10 小时后
+   台)。跑 `scripts/upgrade-backfill-compression.py`。
+2. **扩展 GT 到 30-50 个查询**, 让 eval 信号稳定。16 太
+   少。
+3. **试更大的 embedding 模型** (如 `bge-large-en-v1.5` 1024d)。
+   Reindex 是单独 commit。
 
-If you only care about *the corpus being there* and the search
-quality is good enough for context injection, the system is
-already usable as-is. Run `bash scripts/status.sh` to confirm
-the daemon is healthy.
+如果只关心 *corpus 存在* + 检索质量够用于上下文注入, 系统已
+经可用。跑 `bash scripts/status.sh` 确认 daemon 健康。
 
-## See also
+## 另见
 
-- `docs/architecture.md` — current architecture
-- `docs/IMPROVEMENTS.md` — change history
-- `docs/known-issues.md` — current open problems
-- `benchmark/backfill-quality-eval.ts` — run the retrieval eval
+- `docs/architecture.md` — 当前架构
+- `docs/IMPROVEMENTS.md` — 改动历史
+- `docs/known-issues.md` — 当前开放问题
+- `benchmark/backfill-quality-eval.ts` — 跑检索 eval

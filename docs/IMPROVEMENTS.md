@@ -1,198 +1,190 @@
-# Improvements Tracker
+# 改进追踪
 
-> Change history for the agentmemory backfill observations and
-> search quality. Updated 2026-07-10.
+> agentmemory backfill 观测和检索质量的改动历史。更新于 2026-07-10。
 
-## What the system looks like now
+## 系统现在什么样
 
-| Metric | Value |
+| 指标 | 值 |
 |---|---|
-| Observations | 2460 backfill (100% LLM-compressed) |
-| Sessions | 94 backfill + active |
-| Search quality (R@10 / MRR) | 29.6% / 0.224 on 16-query labeled set |
-| Daemon | healthy, single process, circuit closed |
-| DLQ | 0 (was 5538, drained 2026-07-08) |
-| Open issues | 21 (15 pre-existing + 6 from this work) |
+| 观测 | 2460 条 backfill (100% LLM 压缩) |
+| Session | 94 个 backfill + 活跃 |
+| 检索质量 (R@10 / MRR) | 29.6% / 0.224 (16-query 标注集) |
+| Daemon | 健康, 单进程, 熔断关闭 |
+| DLQ | 0 (从 5538 排空, 2026-07-08) |
+| 开放 issue | 21 (15 原有 + 6 本次新增) |
 
-For a one-line status, run `bash scripts/status.sh`.
-For the full picture, see `docs/architecture.md` and
-`docs/known-issues.md`.
+看一行状态, 跑 `bash scripts/status.sh`。
+看全貌, 见 `docs/architecture.md` 和 `docs/known-issues.md`。
 
-## Phase 1 — DLQ cleanup
+## Phase 1 — DLQ 清理
 
-**Goal**: stop DLQ growth, clear the existing 5538-message
-backlog from the 7/4-7/7 schema-lock disaster.
+**目标**: 停止 DLQ 增长, 清空 7/4-7/7 schema-lock 灾难留下的
+5538 条 backlog。
 
-| What | Commit | Notes |
+| 改动 | Commit | 备注 |
 |---|---|---|
-| `compress.ts:90` now returns `{success: true, skipped: true, reason: "orphan_observation"}` on missing KV entries instead of throwing | `e769842` | Orphans no longer enter the 3-retry → DLQ path. |
-| `iii-config.yaml`: `max_retries: 3 → 1`, `backoff_ms: 5000 → 2000` | `e769842` | Less wasted time per failure. |
-| `scripts/drain-dlq.py`: paginate + snapshot + discard idempotently | `e769842` | The script also has a fix at `735b4f0` (see Phase 1.5 below). |
-| DLQ 5538 → 0 in ~4 minutes | (operational) | Verified by `iii trigger engine::queue::topic_stats`. |
+| `compress.ts:90` 在 KV entry 缺失时返回 `{success: true, skipped: true, reason: "orphan_observation"}` 而不是 throw | `e769842` | orphan 不再走 3-重试 → DLQ 路径 |
+| `iii-config.yaml`: `max_retries: 3 → 1`, `backoff_ms: 5000 → 2000` | `e769842` | 每次失败少浪费时间 |
+| `scripts/drain-dlq.py`: 分页 + snapshot + discard 幂等 | `e769842` | 在 `735b4f0` 还有个 fix (见 Phase 1.5) |
 
-**Phase 1.5** (unplanned): `drain-dlq.py` initially paginated with
-`offset += page_size`, but iii-queue's DLQ is sorted and
-discarded messages are removed from the list, so `offset=N`
-returns empty after the first N are discarded. Fix at
-`735b4f0`: always re-page from offset 0 with dedup.
+DLQ 5538 → 0, ~4 分钟跑完 (运维层面验证, 用
+`iii trigger engine::queue::topic_stats`)。
 
-## Phase 2 — Retrieval quality
+**Phase 1.5** (计划外): `drain-dlq.py` 最初用 `offset += page_size`
+分页, 但 iii-queue 的 DLQ 是 sorted 的, discard 之后消息从
+list 里删除, 所以 `offset=N` 在前 N 个被 discard 后返回空。
+Fix 在 `735b4f0`: 总是从 offset 0 重分页 + dedup。
 
-**Goal**: stop the 41.7% R@10 placebo numbers, give the eval
-real signal, fix rerank, and wire query expansion.
+## Phase 2 — 检索质量
 
-| What | Commit | Notes |
+**目标**: 停止 41.7% R@10 假数据, 给 eval 真实信号, 修 rerank,
+接 query expansion。
+
+| 改动 | Commit | 备注 |
 |---|---|---|
-| `reranker.ts` uses cross-encoder pair API (`{text, text_pair}`) instead of concatenating into a single string. Parallel scoring with 250ms per-pair timeout. 70/30 blend with original `combinedScore` to avoid catastrophic reordering. | `04e701c` | The previous implementation scored "is this string relevant to itself". Now scores real relevance. |
-| `index.ts:381` explicitly passes `rerankEnabled` to `HybridSearch` (was relying on the env default = false) | `04e701c` | Rerank now actually runs by default. |
-| `benchmark/backfill-quality-eval.ts` rewritten: 16 hand-labeled queries, 5 categories, observation-level + session-level metrics, NDCG, HitRate, full UUID match | `04e701c` | The old eval had 3 bugs that made numbers meaningless: empty-relevance = 1.0, fuzzy UUID match, session-level only. |
-| `smart-search.ts` triggers `mem::expand-query` (200ms budget) and routes through `HybridSearch.searchWithExpansion` | `d9a5b52` | Query expansion is reachable. The function was registered but unused before this. |
-| `benchmark/tune-weights.sh`: grid search across BM25/vector weights | `52f231a` | Verified the default `0.4 / 0.6 / 0.3` is near-optimal for the VASP benchmark. |
+| `reranker.ts` 用跨编码器 pair API (`{text, text_pair}`) 而不是拼成单串。parallel 评分 + 250ms/pair timeout。70/30 跟原 `combinedScore` blend 防止灾难性重排 | `04e701c` | 之前评分"这个串跟自己相关吗" |
+| `index.ts:381` 显式传 `rerankEnabled` 给 `HybridSearch` (之前依赖 env 默认 = false) | `04e701c` | rerank 现在默认真跑 |
+| `benchmark/backfill-quality-eval.ts` 重写: 16 个 hand-labeled 查询, 5 类, observation-level + session-level 指标, NDCG, HitRate, 完整 UUID 匹配 | `04e701c` | 旧 eval 有 3 个 bug 让数字无意义: 空相关 = 1.0, 模糊 UUID, 只 session-level |
+| `smart-search.ts` 触发 `mem::expand-query` (200ms 预算) 走 `HybridSearch.searchWithExpansion` | `d9a5b52` | query expansion 可达。函数注册了但没用过 |
+| `benchmark/tune-weights.sh`: BM25/vector 权重 grid search | `52f231a` | 验证默认 `0.4 / 0.6 / 0.3` 对 VASP benchmark 是准最优 |
 
-**Result**: Session R@10 = 29.6%, MRR = 0.224. Two queries hit
-100% (VASP binary cleanup, find large files). The 41.7% /
-0.200 numbers in `benchmark/QUALITY.md` were inflated by the
-empty-label bug — that file is stale now (issue #62).
+**结果**: Session R@10 = 29.6%, MRR = 0.224。两个查询
+100% (VASP binary cleanup, find large files)。`benchmark/QUALITY.md`
+的 41.7% / 0.200 是被空相关 bug 吹起来的, 现在 stale (issue #62)。
 
-**Caveat**: Query expansion adds +40% latency for neutral
-precision on the VASP benchmark. See known-issues #7.
+**注意**: Query expansion 在 VASP benchmark 上 +40% 延迟但
+精度中性, 见 known-issues #7。
 
-## Phase 3 — Corpus quality
+## Phase 3 — Corpus 质量
 
-**Goal**: improve the content of LLM-compressed observations.
+**目标**: 改善 LLM 压缩观测的内容。
 
-| What | Commit | Notes |
+| 改动 | Commit | 备注 |
 |---|---|---|
-| `prompts/compression.ts`: strict importance rubric (1-3 routine, 4-6 normal, 7-9 decisions, 10 breaking), 2-5 searchable concepts, dedup rules, "optimize for findability" preamble | `8756a5b` | |
-| `prompts/summary.ts`: add `<tags>` field, lead-with-decision narrative rule, override semantics in REDUCE | `8756a5b` | Tags live in the existing XML schema — no parser change needed. |
-| `providers/openai.ts`: `temperature: 0` default, 2 retries on 429/5xx/timeout with exponential backoff | `8756a5b` | Corpus is stable across re-compression runs. |
+| `prompts/compression.ts`: 严格 importance rubric (1-3 日常, 4-6 正常, 7-9 决策, 10 破坏性), 2-5 可搜 concepts, dedup 规则, "为可检索而优化"开头 | `8756a5b` | |
+| `prompts/summary.ts`: 加 `<tags>` 字段, lead-with-decision narrative 规则, REDUCE 里的 override 语义 | `8756a5b` | tags 在现有 XML schema 里 — 不需要改 parser |
+| `providers/openai.ts`: `temperature: 0` 默认, 429/5xx/timeout 重试 2 次指数退避 | `8756a5b` | corpus 跨重新压缩稳定 |
 
-**Verified live** (POSTed a test `ls -la` obs to fresh daemon):
+**实际验证** (POST 一条 `ls -la` obs 到新 daemon):
 
-| Field | Old prompt | New prompt |
+| 字段 | 旧 prompt | 新 prompt |
 |---|---|---|
-| `title` | "Synthetic observation" or vague | "ls -la /home/duguex/.agentmemory/data/" |
-| `importance` | 4-6 (rubric ignored) | **2** (correct: routine ls) |
-| `concepts` | 0-1 generic | 3 specific terms |
-| `narrative` | "Command completed" | Natural language describing what happened |
+| `title` | "Synthetic observation" 或模糊 | "ls -la /home/duguex/.agentmemory/data/" |
+| `importance` | 4-6 (rubric 被忽略) | **2** (正确: 日常 ls) |
+| `concepts` | 0-1 通用 | 3 个具体词 |
+| `narrative` | "Command completed" | 自然语言描述发生了什么 |
 
-**Important**: The 2460 existing backfill observations were
-processed with the **old** prompt. Re-compressing them with the
-Phase 3 prompt is the highest-leverage remaining work for
-retrieval quality. Estimated: ~10 hours background via
-`scripts/upgrade-backfill-compression.py`.
+**重要**: 2460 条已存在的 backfill 观测是**旧**prompt 处理
+的。用 Phase 3 prompt 重新压缩它们是检索质量最高的
+杠杆。估计: ~10 小时后台, 用
+`scripts/upgrade-backfill-compression.py`。
 
-## Phase 4 — Pending issues from prior code reviews
+## Phase 4 — 之前代码 review 的待修 issue
 
-15 pre-existing issues, all fixed in commits on
-`feat/omp-adaptation`:
+15 个已有 issue, 全部在 `feat/omp-adaptation` 的 commits 里修
+了:
 
-| Issue | What | Commit |
+| Issue | 内容 | Commit |
 |---|---|---|
-| #56 | `setTimeout` in OMP session_shutdown missing `.unref()` | `a8a5a99` |
-| #53 | `JSON.stringify(event.result)` loses Error details | `28c13cb` |
-| #27, #55 | OMP `serverOk` was a sticky latch | `a8a5a99` |
-| #21 | OMP `currentProject` didn't refresh on `cd` | `00b0d89` |
-| #22, #23 | OMP `agent_start`/`agent_end` asymmetric lifecycle | `00b0d89` |
-| #25 | OMP `systemPrompt=""` produced stray newline | `a8a5a99` |
-| #54 | OMP URL prefix detection by hostname substring | `00b0d89` |
-| #28 | OMP `apiGet` sent `Content-Type` on body-less GET | `00b0d89` |
-| #52 | OMP `Promise.withResolvers` requires Node 22+ | `00b0d89` |
-| #33 | `getAutoForgetIntervalMs`/`getEvictIntervalMs` duplicated `safeParseInt` | `2f164f8` |
-| #32 | `AUTO_FORGET_INTERVAL_MS` rename had no migration path | `2f164f8` + `7d54c91` |
+| #56 | OMP session_shutdown 的 `setTimeout` 缺 `.unref()` | `a8a5a99` |
+| #53 | `JSON.stringify(event.result)` 丢 Error 细节 | `28c13cb` |
+| #27, #55 | OMP `serverOk` 是 sticky latch | `a8a5a99` |
+| #21 | OMP `currentProject` 在 `cd` 后不刷新 | `00b0d89` |
+| #22, #23 | OMP `agent_start`/`agent_end` 生命周期不对称 | `00b0d89` |
+| #25 | OMP `systemPrompt=""` 产生多余换行 | `a8a5a99` |
+| #54 | OMP URL 前缀用 hostname 子串匹配 | `00b0d89` |
+| #28 | OMP `apiGet` 给无 body GET 发 `Content-Type` | `00b0d89` |
+| #52 | OMP `Promise.withResolvers` 要求 Node 22+ | `00b0d89` |
+| #33 | `getAutoForgetIntervalMs`/`getEvictIntervalMs` 重复 `safeParseInt` | `2f164f8` |
+| #32 | `AUTO_FORGET_INTERVAL_MS` 重命名无迁移路径 | `2f164f8` + `7d54c91` |
 | #29 | OMP `maybeWarnPlaintextBearer` dead function body | `a8a5a99` |
-| #57 | `auto-compress.test.ts` env-isolation bug | `e181610` |
+| #57 | `auto-compress.test.ts` 环境隔离 bug | `e181610` |
 
-**22 issues closed** in total (15 pre-existing + 7 new from this
-work). GitHub issue list is now empty.
+**22 个 issue 全部关闭** (15 原有 + 7 本次新增)。GitHub issue
+列表现在空。
 
-## Phase 5 — Queue hold behavior
+## Phase 5 — 队列 hold 行为
 
-**Goal**: distinguish "LLM is briefly unavailable" (hold and
-retry) from "request is malformed" (retry and DLQ).
+**目标**: 区分 "LLM 临时不可用" (hold + 重试) 和 "请求有
+问题" (重试 + DLQ)。
 
-| What | Commit | Notes |
+| 改动 | Commit | 备注 |
 |---|---|---|
-| `OpenAIProvider.isLlmUnavailable(err)` static method detects Ollama "model not found" / ECONNREFUSED / "model not loaded" | `426d1fa` | Pattern-match the error message. |
-| `compress.ts` catch block routes `LlmUnavailable` to `{success: true, skipped: true, reason: "llm_unavailable"}` | `426d1fa` | Engine acks the message, no DLQ. The next enqueue pass picks it up. |
+| `OpenAIProvider.isLlmUnavailable(err)` 静态方法检测 Ollama "model not found" / ECONNREFUSED / "model not loaded" | `426d1fa` | 模式匹配错误消息 |
+| `compress.ts` catch 块把 `LlmUnavailable` 路由到 `{success: true, skipped: true, reason: "llm_unavailable"}` | `426d1fa` | engine ack, 不进 DLQ。下次入队时重试 |
 
-The 5-min Ollama unload is no longer pinned by a 24h
-`OLLAMA_KEEP_ALIVE` env var (commit `0b43c4c`). When the queue
-is idle, the model unloads and the next request triggers a
-30-60s cold load that the queue absorbs.
+5 分钟 Ollama 卸载不再被 24h `OLLAMA_KEEP_ALIVE` env 锁住
+(commit `0b43c4c`)。队列空时, 模型卸载, 下次请求触发 30-60s
+冷加载, 队列 absorb 这个延迟。
 
-## Phase 6 — Documentation and tooling
+## Phase 6 — 文档和工具
 
-| What | Commit |
+| 内容 | Commit |
 |---|---|
-| `docs/architecture.md` — single-page architecture overview | `8ed35b0` + `acd77cd` + `5d195b6` |
-| `docs/IMPROVEMENTS.md` — this file (rewritten for clarity) | (this commit) |
-| `docs/final_purpose.md` — status against 7/2 design goals | `b07b0f4` |
-| `docs/known-issues.md` — current open problems with root cause / fix / status | `bed9d20` |
-| `scripts/status.sh` — one-shot system state | `6333b2e` |
-| `scripts/health.sh` — fast status, bypasses `/sessions` | `a512c2f` |
-| `scripts/trace-obs.sh` — follow one observation through the pipeline | `a512c2f` |
+| `docs/architecture.md` — 单页架构总览 | `8ed35b0` + `acd77cd` + `5d195b6` + `5a9822a` |
+| `docs/IMPROVEMENTS.md` — 本文件 (重写得更清晰) | (本次 commit) |
+| `docs/final_purpose.md` — 7/2 设计目标状态 | `b07b0f4` |
+| `docs/known-issues.md` — 当前开放问题 + 根因 / 修法 / 状态 | `bed9d20` |
+| `scripts/status.sh` — 一次性系统状态 | `6333b2e` |
+| `scripts/health.sh` — 快速状态, 绕过 `/sessions` | `a512c2f` |
+| `scripts/trace-obs.sh` — 跟踪一条观测的全流程 | `a512c2f` |
 | `scripts/drain-dlq.py` — DLQ snapshot + discard (Phase 1) | `e769842` + `735b4f0` |
 
-## Branch state
+## Branch 状态
 
-| Branch | Status |
+| Branch | 状态 |
 |---|---|
-| `feat/omp-adaptation` (at origin) | 16 commits ahead of `main`, all pushed |
+| `feat/omp-adaptation` (at origin) | 比 `main` 领先 16 个 commit, 全部 push |
 
-## Time spent
+## 耗时
 
-- Phase 1 + 1.5: 30 min code + 5 min drain
-- Phase 2: ~2 hours (rerank fix + GT rewrite + expansion wire + grid search)
-- Phase 3: ~1 hour (prompts + provider)
-- Phase 4: ~3 hours (13 OMP/config/test fixes)
-- Phase 5: ~30 min (queue hold + keep_alive removal)
-- Phase 6: ~2 hours (rewrites + diagnostic tools)
-- Issue management: 1 hour
-- Total: ~10 hours over 4 days
+- Phase 1 + 1.5: 30 分钟代码 + 5 分钟排空
+- Phase 2: ~2 小时 (rerank 修 + GT 重写 + expansion 接 + grid search)
+- Phase 3: ~1 小时 (prompts + provider)
+- Phase 4: ~3 小时 (13 OMP/config/test 修)
+- Phase 5: ~30 分钟 (queue hold + keep_alive 移除)
+- Phase 6: ~2 小时 (重写 + 诊断工具)
+- Issue 管理: 1 小时
+- **总计: ~10 小时, 4 天**
 
-## What would close the remaining gap
+## 怎么收尾剩下的 gap
 
-From `docs/known-issues.md`, in order of likely impact:
+从 `docs/known-issues.md`, 按可能效果排序:
 
-1. **Re-compress 2460 obs with the Phase 3 prompt** (~10h
-   background).
-2. **Expand ground truth to 30-50 queries** so the eval signal
-   stabilizes.
-3. **Try a larger embedding model** (e.g. `bge-large-en-v1.5`
-   1024d) — requires a reindex.
+1. **用 Phase 3 prompt 重新压缩 2460 条 obs** (~10h 后台)
+2. **扩展 ground truth 到 30-50 个查询**, 让 eval 信号稳定
+3. **试更大的 embedding 模型** (如 `bge-large-en-v1.5` 1024d) — 需要 reindex
 
-The first item is purely background; the other two need human
-work. None are blockers for live use.
+第一项纯后台; 后两项需要人。都不是线上使用的 blocker。
 
-## How to run things
+## 怎么跑
 
 ```bash
-# Status (the first thing to run when something looks wrong)
+# 状态 (出问题先跑这个)
 bash scripts/status.sh          # daemon, queue, observations, recent log
-bash scripts/health.sh          # fast, bypasses /sessions endpoint
+bash scripts/health.sh          # 快, 绕过 /sessions 端点
 
-# Trace one observation
+# 跟踪一条观测
 bash scripts/trace-obs.sh <sid> <oid>
 
-# Run the retrieval quality benchmark
+# 跑检索质量 benchmark
 cd /home/duguex/memory/agentmemory
 npx tsx benchmark/backfill-quality-eval.ts
 
-# Drain the DLQ
+# 排空 DLQ
 python3 scripts/drain-dlq.py
 
-# Manually trigger a single obs through the compress queue
+# 手动触发一条 obs 通过 compress 队列
 curl -X POST http://localhost:3111/agentmemory/compress \
   -H "Authorization: Bearer omp-memory-local" \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"<sid>","observationId":"<oid>"}'
 
-# Inspect the queue
+# 看队列
 /home/duguex/.agentmemory/bin/iii trigger --function-id engine::queue::topic_stats --payload '{"topic":"mem::compress"}'
 /home/duguex/.agentmemory/bin/iii trigger --function-id engine::queue::dlq_messages --payload '{"topic":"mem::compress","limit":10}'
 
-# Restart the daemon cleanly
+# 重启 daemon
 pkill -9 -f "node.*agentmemory" 2>/dev/null
 rm -f ~/.agentmemory/worker.pid ~/.agentmemory/iii.pid
 nohup agentmemory > /tmp/daemon.log 2>&1 &
