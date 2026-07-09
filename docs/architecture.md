@@ -43,7 +43,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Three processes. That's the entire system.**
+**Four processes. That's the entire system.**
 
 | Process | Started by | Owns |
 |---|---|---|
@@ -51,6 +51,78 @@
 | **iii-engine** | agentmemory daemon (spawns) | HTTP 3111, queue, KV |
 | **agentmemory daemon** | `nohup agentmemory` (manual) | 270 functions |
 | **Ollama** | (system service) | GPU + LLM models |
+
+## Where memories come from
+
+There are **two paths** into the corpus, both ending in the same
+`mem::compress` LLM call.
+
+### Path A: live tool calls (real-time)
+
+The agent is running. Every tool call is captured by a hook.
+
+```
+[see "The one flow that matters: tool call → memory" below]
+```
+
+This produces a steady stream of obs as the agent works.
+
+### Path B: chat history backfill (one-shot)
+
+The agent's past chat history lives in some export format (JSONL,
+JSON dump, sqlite). It's not in agentmemory yet. We import it
+once so the corpus has it.
+
+```
+1.  OMP/Pi chat history → some file format
+    (e.g. ~/.claude/history.jsonl, ~/.omp/sessions/*.json)
+2.  scripts/backfill-sessions.py (or similar)
+    reads the file
+    converts each message to a tool-call-shaped JSON:
+        {
+          "hookType": "post_tool_use",
+          "sessionId": "backfill-<uuid>",
+          "project": <extracted>,
+          "cwd": <extracted>,
+          "timestamp": <extracted>,
+          "data": {
+            "tool_name": <extracted from message>,
+            "tool_input": <extracted from message>,
+            "tool_output": <extracted from message>,
+            "user_prompt": <user message if any>,
+          },
+        }
+3.  For each message, POST /agentmemory/observe
+    (same endpoint as live tool calls — the daemon doesn't care)
+4.  iii-engine → mem::observe (same handler)
+5.  Each obs is enqueued onto mem::compress
+6.  The 2460 backfill obs drain through the queue at ~4 obs/min
+    (one LLM call per obs, qwen3.6:35b on V100 32GB → ~5s/obs)
+7.  After ~10 hours of background draining, the backfill corpus
+    is fully LLM-compressed and indistinguishable from live obs.
+```
+
+**The backfill pipeline reuses the live pipeline.** It's not a
+separate "bulk import" path. The difference is only at the source:
+live agent calls vs. an off-line script feeding the same
+`/observe` endpoint.
+
+After backfill completes, the script also writes a summary via
+`/agentmemory/summarize` (per-session) and entities via
+`/agentmemory/graph-extract` (per-session). Those run as
+`mem::summarize` and `mem::graph-extract` queue jobs, concurrency
+2 each, ~1-2 min per session.
+
+### What's NOT in the corpus
+
+- The user's plain chat text (user prompts, no tool call)
+  — these get bundled into the obs that DOES get compressed
+    (the `user_prompt` field on a tool call's obs)
+- The LLM's plain text replies
+  — same: bundled into the obs when the agent uses a tool
+- Multi-turn reasoning between tool calls
+  — currently lost. The obs is per-tool-call, not per-turn.
+    If you want per-turn memory, that needs a new pipeline.
 
 ## The one flow that matters: tool call → memory
 
