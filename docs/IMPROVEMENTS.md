@@ -3,7 +3,7 @@
 > Last updated: 2026-07-09
 
 This document tracks the systematic improvement work for agentmemory's
-backfill corpus and search quality. It's the single source of truth for
+backfill observations and search quality. It's the single source of truth for
 "what's done, what's in progress, and what's queued."
 
 ## TL;DR
@@ -78,7 +78,7 @@ Goal: improve the content of LLM-compressed obs, not just the count.
 - `vision.ts` structured output
 
 These are pure prompt edits with no schema changes, easy to land in
-a follow-up. The biggest corpus quality gain comes from re-compressing
+a follow-up. The biggest quality gain comes from re-compressing
 the existing 2460 obs with the new prompt (4 obs/min × 2460 = ~10h).
 Run `python3 scripts/upgrade-backfill-compression.py` (already in the
 background loop) to drain.

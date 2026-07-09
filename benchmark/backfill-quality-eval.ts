@@ -1,4 +1,4 @@
-// Backfill corpus quality eval — measures recall/precision on
+// Backfill observations quality eval — measures recall/precision on
 // agentmemory data against hand-labeled queries.
 //
 // Phase 2.2: rewrote ground truth for a meaningful R@10.
@@ -12,8 +12,8 @@
 //      observation-level results. With one obs per session in top-10,
 //      we lost recall even when the obs was highly relevant.
 //   3. The 6 hand-labeled queries only covered a narrow slice of the
-//      corpus (2 VASP sessions), so most queries reported 0% recall
-//      for the wrong reason (no labels, not bad search).
+//      observations (2 VASP sessions), so most queries reported 0%
+//      recall for the wrong reason (no labels, not bad search).
 //
 // The rewrite:
 //   - Splits evaluation into session-level and observation-level

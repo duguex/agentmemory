@@ -1,9 +1,10 @@
 #!/bin/bash
-# Quick corpus stats — what's in agentmemory right now.
+# Quick observation stats — what's in agentmemory right now.
 # Doesn't hit the /sessions endpoint (which can be slow on 100+ sessions).
 # Instead, lists sessions by reading the engine state directly.
 #
 # Usage: bash scripts/corpus-stats.sh
+# (filename kept for backward compat — script actually shows observation stats)
 
 set -e
 SECRET="${AGENTMEMORY_SECRET:-omp-memory-local}"
@@ -34,7 +35,7 @@ else
 fi
 echo
 
-# Observations by kind across the whole corpus (sampled)
+# Observations by kind across all backfill sessions (sampled)
 echo "── Observation kinds (sampled, first 5 backfill sessions) ──"
 python3 << 'PYEOF'
 import json, urllib.request
@@ -67,7 +68,7 @@ print(f'  LLM-compressed: {llm}')
 print(f'  Synthetic:      {syn}')
 print(f'  Unknown:        {unk}')
 print()
-print('  (for full corpus stats, see scripts/status.sh)')
+print('  (for full observation stats, see scripts/status.sh)')
 PYEOF
 echo
 

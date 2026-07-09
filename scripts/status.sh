@@ -2,7 +2,7 @@
 # One-shot system status for agentmemory.
 # Run from anywhere:  bash scripts/status.sh
 #
-# Shows: daemon health, processes, queues, corpus quality, recent
+# Shows: daemon health, processes, queues, observations, recent
 # LLM activity, DLQ state, and open issues. Designed to be the first
 # thing you run when something looks wrong.
 
@@ -141,7 +141,7 @@ total = llm + syn + unk
 if total:
     pct = 100*llm/total
     icon = '\033[32m✓\033[0m' if pct >= 99 else '\033[33m⚠\033[0m' if pct >= 90 else '\033[31m✗\033[0m'
-    print(f"  {icon} backfill corpus: {pct:.1f}% LLM-compressed ({llm}/{total})")
+    print(f"  {icon} backfill observations: {pct:.1f}% LLM-compressed ({llm}/{total})")
     print(f"      synthetic: {syn}, unknown: {unk}")
     print(f"  ${DIM}backfill sessions:${RST}    {len(bf)}/{total_sessions}")
 else:

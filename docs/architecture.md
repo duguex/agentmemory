@@ -52,9 +52,9 @@
 | **agentmemory daemon** | `nohup agentmemory` (manual) | 270 functions |
 | **Ollama** | (system service) | GPU + LLM models |
 
-## Where memories come from
+## Where observations come from
 
-There are **two paths** into the corpus, both ending in the same
+There are **two paths** into agentmemory, both ending in the same
 `mem::compress` LLM call.
 
 ### Path A: live tool calls (real-time)
@@ -62,16 +62,16 @@ There are **two paths** into the corpus, both ending in the same
 The agent is running. Every tool call is captured by a hook.
 
 ```
-[see "The one flow that matters: tool call → memory" below]
+[see "The one flow that matters: tool call → observation" below]
 ```
 
-This produces a steady stream of obs as the agent works.
+This produces a steady stream of observations as the agent works.
 
 ### Path B: chat history backfill (one-shot)
 
 The agent's past chat history lives in some export format (JSONL,
 JSON dump, sqlite). It's not in agentmemory yet. We import it
-once so the corpus has it.
+once so the backfill sessions have their observations.
 
 ```
 1.  OMP/Pi chat history → some file format
@@ -98,8 +98,8 @@ once so the corpus has it.
 5.  Each obs is enqueued onto mem::compress
 6.  The 2460 backfill obs drain through the queue at ~4 obs/min
     (one LLM call per obs, qwen3.6:35b on V100 32GB → ~5s/obs)
-7.  After ~10 hours of background draining, the backfill corpus
-    is fully LLM-compressed and indistinguishable from live obs.
+7.  After ~10 hours of background draining, the backfill observations
+    are fully LLM-compressed and indistinguishable from live observations.
 ```
 
 **The backfill pipeline reuses the live pipeline.** It's not a
@@ -113,7 +113,7 @@ After backfill completes, the script also writes a summary via
 `mem::summarize` and `mem::graph-extract` queue jobs, concurrency
 2 each, ~1-2 min per session.
 
-### What's NOT in the corpus
+### What's NOT in agentmemory
 
 - The user's plain chat text (user prompts, no tool call)
   — these get bundled into the obs that DOES get compressed
@@ -122,9 +122,9 @@ After backfill completes, the script also writes a summary via
   — same: bundled into the obs when the agent uses a tool
 - Multi-turn reasoning between tool calls
   — currently lost. The obs is per-tool-call, not per-turn.
-    If you want per-turn memory, that needs a new pipeline.
+    If you want per-turn observations, that needs a new pipeline.
 
-## The one flow that matters: tool call → memory
+## The one flow that matters: tool call → observation
 
 ```
 1.  Claude runs a tool (e.g. Bash "ls /tmp")
@@ -152,7 +152,7 @@ After backfill completes, the script also writes a summary via
       e. parse the XML response
       f. kv.delete + kv.set (schema-lock workaround)
       g. re-index into BM25 + vector indices
-10. The obs is now in the corpus, retrievable.
+10. The observation is now stored in agentmemory, retrievable.
 ```
 
 **Key property**: step 10 happens entirely off the critical path
@@ -183,7 +183,7 @@ LLM work in step 9 takes seconds and runs in the background.
 5.  Return top-K observations to the agent's system prompt
 ```
 
-## What's in the corpus right now
+## What's in agentmemory right now
 
 - 94 backfill sessions (from OMP/Pi chat history)
 - 2460 total observations
@@ -222,7 +222,7 @@ LLM work in step 9 takes seconds and runs in the background.
 │
 └── data/
     ├── state_store.db/      # SQLite-backed KV (one file per scope)
-    │   ├── mem%3Aobservations%3A<sid>.bin   # the corpus
+    │   ├── mem%3Aobservations%3A<sid>.bin   # one file per session's observations
     │   ├── mem%3Asessions.bin              # session list
     │   ├── mem%3Asummaries%3A<sid>.bin    # per-session summary
     │   ├── mem%3Aindex%3Abm25:...bin       # BM25 index
@@ -261,7 +261,7 @@ LLM work in step 9 takes seconds and runs in the background.
 
 ```bash
 # See system state
-bash scripts/status.sh          # daemon, queue, corpus, recent log
+bash scripts/status.sh          # daemon, queue, observations, recent log
 bash scripts/health.sh          # same but bypasses /sessions endpoint
 
 # Trace one observation
