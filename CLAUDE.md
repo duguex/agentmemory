@@ -153,6 +153,7 @@ These are non-obvious invariants that bite when changing only one place:
 - `DESIGN.md` — Lamborghini visual design system (only relevant for the `website/` work)
 - `ROADMAP.md` — what's planned for upcoming versions
 - `CHANGELOG.md` — version-by-version change log
+- `docs/README.md` — entry point to the project docs (architecture, IMPROVEMENTS, known-issues, final_purpose). **Start here** for the system's current shape.
 - `docs/reviews/<date>-*-code-review.md` — prior max-effort code reviews; format = problem / impact / fix / verification. If your change relates to a flagged issue, link to it.
 - `docs/issues/<date>-*/` — local issue markdown from this session, indexed by README. 15 P0-P2 findings on `feat/omp-adaptation` already filed there.
 - `docs/benchmarks/`, `benchmark/` — published retrieval / token / scale numbers
