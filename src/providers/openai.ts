@@ -131,6 +131,28 @@ export class OpenAIProvider implements MemoryProvider {
     throw lastError ?? new Error("OpenAI call failed without an error");
   }
 
+  /**
+   * Distinguish "LLM is unavailable right now" (Ollama model unloaded,
+   * daemon down) from "LLM is reachable but gave a bad response"
+   * (parse failure, bad request, 5xx). The first class means the
+   * queue should hold the obs and retry later; the second means the
+   * request is broken and should DLQ.
+   *
+   * Callers (src/functions/compress.ts) inspect the thrown error
+   * name and route to {success:true, skipped:true} for LlmUnavailable
+   * (engine acks, no DLQ) vs {success:false, error} for everything
+   * else (engine retries 1x then DLQ).
+   */
+  static isLlmUnavailable(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    const msg = err.message;
+    // Ollama returns 404 with body containing "model" + "not found"
+    // when the model is unloaded (Ollama's default 5min unload kicks
+    // in when no requests have hit the model). ECONNREFUSED means
+    // the daemon itself is down.
+    return /model.*not.*found|ECONNREFUSED|fetch failed|ENOTFOUND|model not loaded/i.test(msg);
+  }
+
   private async attemptCall(
     url: string,
     body: Record<string, unknown>,

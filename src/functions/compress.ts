@@ -1,6 +1,7 @@
 import { TriggerAction, type ISdk } from "iii-sdk";
 import { readFileSync } from "node:fs";
 import { isManagedImagePath } from "../utils/image-store.js";
+import { OpenAIProvider } from "../providers/openai.js";
 import type {
   RawObservation,
   CompressedObservation,
@@ -353,6 +354,25 @@ export function registerCompressFunction(
         const latencyMs = Date.now() - startMs;
         if (metricsStore) {
           await metricsStore.record("mem::compress", latencyMs, false);
+        }
+        // Queue-aware error handling: distinguish "LLM is unavailable
+        // right now" (Ollama model unloaded, daemon down) from "LLM
+        // gave a bad response" (parse fail, bad input). The first
+        // class means the obs should stay in the queue and be retried
+        // by the next enqueue pass — return {success:true, skipped}
+        // so the engine acks and doesn't DLQ. The second class
+        // indicates a request that won't fix itself — return
+        // {success:false} so the engine retries 1x and then DLQs.
+        if (OpenAIProvider.isLlmUnavailable(err)) {
+          logger.info("compress: LLM unavailable, holding obs in queue", {
+            obsId: data.observationId,
+            error: msg,
+          });
+          return {
+            success: true,
+            skipped: true,
+            reason: "llm_unavailable",
+          };
         }
         logger.error("Compression failed", {
           obsId: data.observationId,
