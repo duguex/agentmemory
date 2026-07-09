@@ -172,7 +172,7 @@ curl -X POST http://localhost:3111/agentmemory/compress \
 # Restart the daemon cleanly
 pkill -9 -f "node.*agentmemory" 2>/dev/null
 rm -f ~/.agentmemory/worker.pid ~/.agentmemory/iii.pid
-nohup env OLLAMA_KEEP_ALIVE=24h agentmemory > /tmp/daemon.log 2>&1 &
+nohup agentmemory > /tmp/daemon.log 2>&1 &
 ```
 
 ## Files added/modified

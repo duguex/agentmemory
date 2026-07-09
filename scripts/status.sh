@@ -66,7 +66,7 @@ if [ -z "$HEALTH" ] || ! echo "$HEALTH" | python3 -c "import sys,json; json.load
   fail "daemon not responding at $AGENTMEMORY_URL"
   echo
   echo "  Hint: check if the worker.pid process is alive, or restart:"
-  echo "    nohup env OLLAMA_KEEP_ALIVE=24h agentmemory > /tmp/daemon.log 2>&1 &"
+  echo "    nohup agentmemory > /tmp/daemon.log 2>&1 &"
   exit 0
 fi
 

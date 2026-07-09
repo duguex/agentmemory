@@ -36,7 +36,7 @@ for BM25 in 0.3 0.5 0.7; do
     sleep 5
     # Start with new weights
     BM25_WEIGHT=$BM25 VECTOR_WEIGHT=$VECTOR AGENTMEMORY_GRAPH_WEIGHT=$GRAPH \
-      OLLAMA_KEEP_ALIVE=24h nohup agentmemory > /tmp/daemon-tune.log 2>&1 &
+      nohup agentmemory > /tmp/daemon-tune.log 2>&1 &
     # Wait for daemon to be ready
     for i in {1..30}; do
       sleep 1
