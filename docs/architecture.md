@@ -206,6 +206,87 @@ LLM work in step 9 takes seconds and runs in the background.
 - writes 1 compressed obs back to KV
 - ~4-6 seconds per call on V100 32GB
 
+### Concurrency and scheduling
+
+The `mem::compress` queue runs at **concurrency=1** (one obs at a
+time). At ~5s/obs this means **~12 obs/min peak throughput**, but
+typical real-world rate is ~4 obs/min once you factor in
+`mem::graph-extract` competing for the same Ollama instance.
+
+The queue has these retry parameters (in `iii-config.yaml`):
+```
+max_retries: 1        # one retry on transient error
+backoff_ms: 2000      # 2s between retries
+message_group_field: observationId   # FIFO per-obs ordering
+```
+
+### Queue hold: "LLM is unavailable" vs "request is broken"
+
+When the Ollama endpoint returns an error, `mem::compress` has to
+decide: is this a "the LLM is briefly down, hold this obs and try
+again later" error, or a "this request is malformed, it's not
+going to work" error?
+
+- **LLM unavailable** (Ollama model unloaded, ECONNREFUSED,
+  "model not found"): returns `{success: true, skipped: true,
+  reason: "llm_unavailable"}` — the engine acks the message
+  without retrying, and the obs is implicitly held for the next
+  enqueue pass.
+- **Real error** (parse fail, malformed XML, 5xx that isn't a
+  transient): returns `{success: false}` — the engine retries 1x,
+  then DLQs the message.
+
+The LLM-unavailable detection lives in
+`OpenAIProvider.isLlmUnavailable()` in `src/providers/openai.ts`
+and is called from the catch block in `src/functions/compress.ts`.
+
+### Circuit breaker
+
+The LLM provider wraps every call with a circuit breaker
+(`src/providers/circuit-breaker.ts`):
+- After 3 failures within a 60s window → circuit opens
+- Circuit stays open for 30s
+- After 30s → one probe call (half-open state)
+- If probe succeeds → circuit closes, normal traffic resumes
+- If probe fails → circuit re-opens for another 30s
+
+This prevents a string of failures from hammering a sick Ollama
+endpoint. The 30s open period is short enough that a transient
+outage self-heals quickly.
+
+### Deduplication
+
+`mem::observe` dedups incoming obs by SHA-256 fingerprint of the
+event, with a **5-minute window**. If a tool call's event
+fingerprint was seen in the last 5 minutes, the new one is
+silently dropped. This prevents a buggy or chatty hook from
+flooding the corpus with the same obs.
+
+The 5-minute window is hard-coded in `src/functions/observe.ts`.
+Longer windows (e.g. across a full agent session) would dedup
+more aggressively but risk dropping legitimate retries of
+distinct-but-similar events.
+
+### Ollama model unload
+
+Ollama's default behavior: unload a model from VRAM after 5
+minutes of no requests. The `qwen3.6:35b` model is 22GB, so this
+matters — leaving it loaded permanently would block other GPU
+work.
+
+**However**: as long as `mem::compress` is consuming from the
+queue (which it is, at ~4 obs/min), the model never idles and
+Ollama never unloads it. The 5-min unload only kicks in if the
+queue is empty for 5+ minutes — a deliberate idle. See
+`docs/known-issues.md` for the implications.
+
+We do **not** set `OLLAMA_KEEP_ALIVE` on the daemon. That env
+var was removed in commit `0b43c4c` because pinning the model
+permanently is the wrong trade-off: it gives faster per-obs
+latency at the cost of 22GB VRAM always reserved. The queue is
+designed to absorb the 30-60s cold-load latency on the first
+request after idle.
+
 ## What's in storage
 
 ```
@@ -257,6 +338,28 @@ LLM work in step 9 takes seconds and runs in the background.
 | **Status / diagnostics** | one-shot system state | `scripts/status.sh`, `scripts/health.sh` |
 | **Trace a single obs** | follow one record through | `scripts/trace-obs.sh` |
 
+## What's NOT in scope (deliberate omissions)
+
+Things agentmemory does not do, by design:
+
+- **Multi-turn reasoning between tool calls** is not stored. Each
+  observation is per-tool-call. The LLM's plain text replies are
+  bundled into the obs that triggered the tool, not captured
+  separately.
+- **Cross-session user identity** is not enforced. Sessions are
+  identified by `sessionId` (string), no auth. The bearer token
+  in `AGENTMEMORY_SECRET` is the only access control.
+- **Real-time event streaming** to the agent. The agent sees
+  observations only when it queries via `/smart-search`; there's
+  no push channel that fires when a related obs lands.
+- **Observation editing / deletion API** for end users. The agent
+  can observe and search, but there's no `DELETE /observations`
+  endpoint. Removal is done by editing the SQLite directly
+  (see `scripts/drain-dlq.py` for an example).
+- **Batch LLM calls** for compression. Each obs is one LLM
+  call. See `docs/known-issues.md` for why this is a known
+  performance limitation.
+
 ## How to interact with it
 
 ```bash
@@ -270,6 +373,38 @@ bash scripts/trace-obs.sh <sid> <oid>
 # Run the retrieval quality benchmark
 npx tsx benchmark/backfill-quality-eval.ts
 ```
+
+## Known limitations and gotchas
+
+These aren't bugs — they're design constraints you'll hit.
+
+- **`/agentmemory/sessions` is slow on 100+ sessions.** The
+  handler reads the full session list from KV, fetches per-session
+  summaries, and returns them all. On the current 134-session
+  corpus it can take >10s. Use `scripts/health.sh` for fast
+  status; reserve the `/sessions` endpoint for explicit
+  browsing.
+- **The first LLM request after idle is slow (30-60s).** Ollama
+  has to load qwen3.6:35b from disk into 22GB of VRAM. The
+  queue absorbs this latency — no obs is lost, they just wait
+  in the queue. This is the trade-off for not pinning the model
+  permanently.
+- **Daemon restart can leave orphan workers.** After a daemon
+  crash + restart, the engine sometimes retains the old worker
+  registration alongside the new one. The `/health` endpoint
+  will show `workers: 2` instead of `workers: 1`. The fix is to
+  kill any `node.*agentmemory` process before restart.
+- **Per-obs LLM call is the throughput bottleneck.** qwen3.6:35b
+  on V100 32GB takes ~5s per obs. With concurrency=1 the
+  ceiling is ~12 obs/min but real-world is ~4. This is a
+  single-GPU hardware limit, not a software bug.
+- **Three commits made 24h keep_alive obsolete** (commits
+  `e769842`, `ced858e`, `0b43c4c`). If you see the daemon started
+  with `nohup env OLLAMA_KEEP_ALIVE=24h agentmemory`, that command
+  line is stale; the modern equivalent is just `nohup agentmemory`.
+
+For more open issues and their current state, see
+`docs/known-issues.md` and the GitHub issue tracker.
 
 ## See also
 
