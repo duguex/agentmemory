@@ -54,7 +54,8 @@ bash scripts/health.sh
 | Compress queue stuck / depth plateau / zombie jobs | [`docs/known-issues.md`](docs/known-issues.md) §6b; `python3 scripts/queue-reconcile.py --check`; `bash scripts/am-daemon.sh health` |
 | Doc map / reading order | [`docs/README.md`](docs/README.md) |
 | Install agentmemory on a user machine (self-setup) | [`INSTALL_FOR_AGENTS.md`](INSTALL_FOR_AGENTS.md) |
-| User-facing product docs | [`README.md`](README.md) |
+| User-facing product docs (short) | [`README.md`](README.md) |
+| Full product / install depth | [`docs/user/guide.md`](docs/user/guide.md) |
 | Website / visual only | [`DESIGN.md`](DESIGN.md) + `website/` |
 | Memory not saved / dupes | `src/functions/observe.ts` + dedup |
 | New MCP tool / REST / version bump | checklists in `docs/agent-conventions.md` |

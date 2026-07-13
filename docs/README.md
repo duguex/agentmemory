@@ -30,6 +30,13 @@
 - **出问题先看** → `bash ../scripts/am-daemon.sh health` / `status`，再看 architecture「已知限制」与 known-issues
 - **想改代码** → IMPROVEMENTS.md 找相关 phase, 再看 known-issues.md
 
+## 用户向产品文档
+
+| 文档 | 答什么问题 |
+|---|---|
+| [`../README.md`](../README.md) | 短入口：安装、端口、文档地图 |
+| [`user/guide.md`](./user/guide.md) | 原根 README 全文（benchmarks、各 agent 接线、MCP 工具表、配置长表、API） |
+
 ## 其他文档
 
 - `superpowers/plans/` — 正轨计划、有用性检验、历史实现计划
