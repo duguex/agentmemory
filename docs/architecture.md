@@ -454,5 +454,5 @@ npx tsx benchmark/backfill-quality-eval.ts
 - `docs/IMPROVEMENTS.md` — 改动历史
 - `docs/known-issues.md` — 当前开放问题
 - `docs/final_purpose.md` — 7/2 设计目标状态
-- `AGENTS.md` — 编码约定
-- `CLAUDE.md` — 快速参考
+- `AGENTS.md` — agent 入口（短路由器 + 硬规则）；细则见 `docs/agent-conventions.md` / `docs/agent-testing.md`
+- `CLAUDE.md` — Claude 适配：本地短摘要 + `@AGENTS.md`（非独立全文）
