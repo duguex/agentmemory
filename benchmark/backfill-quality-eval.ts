@@ -42,38 +42,69 @@ interface LabeledQuery {
 }
 
 const LABELED_QUERIES: LabeledQuery[] = [
-  // === VASP domain (well-known) ===
+  // Ground truth refreshed 2026-07-12 against the live corpus.
+  // Session labels + observation labels (relevantObservations) for obs-level R@10.
+  // Prefer durable backfill-* sessions; auto-* only when needed.
+
+  // === VASP domain ===
   {
     query: "VASP binary file cleanup CHGCAR WAVECAR",
     category: "semantic",
-    relevantSessions: ["backfill-019eb9b4-cbcf-7000-96ab-7bcc666ef668"],
+    relevantSessions: [
+      "backfill-019ec76e-1b60-7000-a31c-2a631f1b890e",
+      "backfill-019ebcce-63ec-7000-968f-07f41529940b",
+      "backfill-019ec024-3efe-7000-8bd5-e94cba95eb05",
+    ],
+    relevantObservations: [
+      "obs_mr9pfviu_1e564c9d1a68",
+      "obs_mr9pfvl0_d2b86da22ca9",
+      "obs_mr9pfwex_81ed7eeee8d5",
+      "obs_mr9pfq3y_c5ff865831f3",
+    ],
   },
   {
     query: "VASP directory listing exploration",
     category: "semantic",
     relevantSessions: [
-      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2",
-      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
-      "backfill-019eb9ba-9301-7000-bd2d-99f7e9f821b2",
-      "backfill-019ebcce-63ec-7000-968f-07f41529940b",
-      "backfill-019eb9d6-f241-7000-a973-5d6bb6792882",
+      "backfill-019ebb5f-2a16-7000-81bb-6c1addf056a0",
+      "backfill-019ec76e-1b60-7000-a31c-2a631f1b890e",
+      "backfill-019ec024-3efe-7000-8bd5-e94cba95eb05",
+    ],
+    relevantObservations: [
+      "obs_mr9pfnko_655f4b2942a4",
+      "obs_mr9pfu6c_72f7cd46aada",
+      "obs_mr9pfwx9_b9d7e2dbc9c4",
+      "obs_mr9pfsv5_c8477170dbb5",
     ],
   },
   {
     query: "VASP data analysis Python read script",
     category: "code",
     relevantSessions: [
-      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2",
-      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
+      "backfill-019f0541-47e6-7000-84f6-c52eecb98bb9",
+      "backfill-019ed519-b9f6-7000-9bfc-a5eedb5afedf",
+      "backfill-019edb44-916e-7000-b4a0-1a159622c2d7",
+    ],
+    relevantObservations: [
+      "obs_mr9pg16w_9325fce9768b",
+      "obs_mr9pg0yq_77d2e717e9c6",
+      "obs_mr9pg3js_c42ea13a2b4c",
+      "obs_mr9pg3gc_973f156c00d1",
     ],
   },
   {
     query: "directory listing directory survey",
     category: "exact",
     relevantSessions: [
-      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2",
-      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
-      "backfill-019eb9ba-9301-7000-bd2d-99f7e9f821b2",
+      "backfill-019f03fe-12a1-7000-97a0-f009efe69008",
+      "backfill-019ef34d-96c2-7000-8436-5daa5e732596",
+      "backfill-019ebfae-7dbc-7000-b928-7422b9066ea6",
+    ],
+    relevantObservations: [
+      "obs_mr9pg5b5_480cdc2293d6",
+      "obs_mr9pg40t_9c79c6eac52c",
+      "obs_mr9pg49t_7aa8f85a6bb7",
+      "obs_mr9pg4gf_8759f7f37552",
     ],
   },
 
@@ -82,26 +113,45 @@ const LABELED_QUERIES: LabeledQuery[] = [
     query: "find large files to delete",
     category: "semantic",
     relevantSessions: [
-      "backfill-019eb9d6-f241-7000-a973-5d6bb6792882",
-      "backfill-019eb9b4-cbcf-7000-96ab-7bcc666ef668",
+      "backfill-019edb44-916e-7000-b4a0-1a159622c2d7",
+      "backfill-019f03fe-12a1-7000-97a0-f009efe69008",
+      "backfill-019ee06c-1bb0-7000-965e-9426d54a5451",
+    ],
+    relevantObservations: [
+      "obs_mr9pg3id_0e834b930d1f",
+      "obs_mr9pg3av_d7ca160a9d98",
+      "obs_mr9pgbsn_4b9efb8c84b9",
+      "obs_mr9pg3ce_35013cf700b4",
     ],
   },
   {
     query: "file read text file",
     category: "exact",
-    // Many sessions involve file_read — too broad for precise labels.
-    // We list a representative subset.
     relevantSessions: [
-      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
+      "backfill-019ec024-3efe-7000-8bd5-e94cba95eb05",
       "backfill-019ebcce-63ec-7000-968f-07f41529940b",
+      "backfill-019ec76e-1b60-7000-a31c-2a631f1b890e",
+    ],
+    relevantObservations: [
+      "obs_mr9pfta6_86574e845a1c",
+      "obs_mr9pfv6t_8dcaf40e050c",
+      "obs_mr9pfv2e_1b5fa23784e9",
+      "obs_mr9pfry8_75791073ddc7",
     ],
   },
   {
     query: "edit YAML configuration file",
     category: "semantic",
     relevantSessions: [
-      "backfill-019e87b0-24ce-7000-9b2d-fa2877a0350f",
-      "backfill-019e87b0-24e3-7000-ba72-81a2128f63f1",
+      "auto-mrgnwdpq",
+      "auto-mrhjmhbb",
+      "auto-mrgtcxxe",
+    ],
+    relevantObservations: [
+      "obs_mrhk4kv1_c25da49a953d",
+      "obs_mrgo84wv_9211f6db80a8",
+      "obs_mrgtoh20_6a413f0c29a9",
+      "obs_mrhk2hmo_586fe02ed625",
     ],
   },
 
@@ -110,16 +160,31 @@ const LABELED_QUERIES: LabeledQuery[] = [
     query: "task error failure investigation",
     category: "semantic",
     relevantSessions: [
-      "backfill-019e9c60-319a-7000-beae-18fd40bd11c5",
-      "backfill-019e9c3b-616d-7000-8863-288f2956c0f0",
+      "auto-mrfc4024",
+      "auto-mrfcc5lj",
+      "auto-mrfds5fx",
+      "backfill-019f03fe-12a1-7000-97a0-f009efe69008",
+    ],
+    relevantObservations: [
+      "obs_mrfc42g4_95be5a34ddc2",
+      "obs_mrfcc90h_3bdcd77691c7",
+      "obs_mrfds91f_b795e3c06507",
+      "obs_mrfcccyy_d3b209f79846",
     ],
   },
   {
     query: "PostToolUse hook failure",
     category: "exact",
     relevantSessions: [
-      "backfill-019e9c60-319a-7000-beae-18fd40bd11c5",
-      "backfill-019e9c25-6599-7000-813b-01aeabdf0f29",
+      "backfill-019ec024-3efe-7000-8bd5-e94cba95eb05",
+      "backfill-019ec76e-1b60-7000-a31c-2a631f1b890e",
+      "auto-mrduv00x",
+    ],
+    relevantObservations: [
+      "obs_mr9pfsb5_121ffdc708fb",
+      "obs_mr9pfrsq_9bd691dc7721",
+      "obs_mr9pfshz_021df7560636",
+      "obs_mr9pfubm_9c2ce72a1fdd",
     ],
   },
 
@@ -128,16 +193,30 @@ const LABELED_QUERIES: LabeledQuery[] = [
     query: "agent start subagent",
     category: "entity",
     relevantSessions: [
-      "backfill-019e9c25-6599-7000-813b-01aeabdf0f29",
-      "backfill-019e8cf3-e3a2-7000-8a23-3fdce014fb9a",
+      "backfill-019ee06c-1bb0-7000-965e-9426d54a5451",
+      "backfill-019ee610-bd2a-7000-84cf-0032885830df",
+      "backfill-019ee62c-3a2c-7000-a293-e29f7c44c95d",
+    ],
+    relevantObservations: [
+      "obs_mr9phimc_d4e55075778a",
+      "obs_mr9phesc_b810f302b7ea",
+      "obs_mr9phf3o_e8e899a87047",
+      "obs_mr9phhb8_93e8d5b2721e",
     ],
   },
   {
     query: "session start context",
     category: "entity",
     relevantSessions: [
-      "backfill-019e87b0-24ce-7000-9b2d-fa2877a0350f",
-      "backfill-019e8cf8-129d-7000-9472-721ee025a64b",
+      "backfill-019ee057-cec3-7000-acdb-5507a28d9afb",
+      "backfill-019ebfae-7dbc-7000-b928-7422b9066ea6",
+      "backfill-019ee06c-1bb0-7000-965e-9426d54a5451",
+    ],
+    relevantObservations: [
+      "obs_mr9phe8s_e0644832ebfc",
+      "obs_mr9phlc8_e781a1b66a70",
+      "obs_mr9phee5_4ec25ab133e0",
+      "obs_mr9phgmb_453df5637fd3",
     ],
   },
 
@@ -146,22 +225,45 @@ const LABELED_QUERIES: LabeledQuery[] = [
     query: "Python script running",
     category: "code",
     relevantSessions: [
-      "backfill-019eb9a6-e159-7000-9dc9-f508d70543c2",
-      "backfill-019eb9ba-9336-7000-ad3d-7606533c415d",
+      "backfill-019edb44-916e-7000-b4a0-1a159622c2d7",
+      "backfill-019ee62c-3a2c-7000-a293-e29f7c44c95d",
+      "backfill-019f03fe-12a1-7000-97a0-f009efe69008",
+    ],
+    relevantObservations: [
+      "obs_mr9phjx9_dc3704696846",
+      "obs_mr9pg6s1_49e724ce2b71",
+      "obs_mr9phjnu_c1554bcee9f9",
+      "obs_mr9pg6uz_a9897bd76e55",
     ],
   },
   {
     query: "test runner pytest",
     category: "code",
-    // Test running spans many sessions; this is a "test the ranking" query
-    // rather than a precise label.
-    relevantSessions: [],
+    relevantSessions: [
+      "backfill-019ee06c-1bb0-7000-965e-9426d54a5451",
+      "backfill-019ee62c-3a2c-7000-a293-e29f7c44c95d",
+      "auto-mrbr33fp",
+    ],
+    relevantObservations: [
+      "obs_mrbrf0d4_3535803e129c",
+      "obs_mr9phjl1_55cbbe2d5c14",
+      "obs_mr9phj5r_b26ea019df3d",
+      "obs_mr9phfh4_9d600cd59f55",
+    ],
   },
   {
     query: "git commit version control",
     category: "entity",
     relevantSessions: [
-      "backfill-019ee048-082c-7000-a7bf-9132e6cb4d8c",
+      "backfill-019ede58-0a57-7000-b373-9a3bbecd911b",
+      "backfill-019ec024-3efe-7000-8bd5-e94cba95eb05",
+      "backfill-019edb44-916e-7000-b4a0-1a159622c2d7",
+    ],
+    relevantObservations: [
+      "obs_mr9pgmzz_653bef230f2f",
+      "obs_mr9pfsdc_e120c57a73be",
+      "obs_mr9pg3md_c73ad13fca17",
+      "obs_mr9pgn24_0d821d6c7720",
     ],
   },
 
@@ -170,19 +272,34 @@ const LABELED_QUERIES: LabeledQuery[] = [
     query: "searched file content grep",
     category: "exact",
     relevantSessions: [
-      "backfill-019ebcce-63ec-7000-968f-07f41529940b",
-      "backfill-019e87b7-a876-7000-9544-88f886c0ab27",
+      "backfill-019ec76e-1b60-7000-a31c-2a631f1b890e",
+      "backfill-019ee506-ad10-7000-a303-c0e494b2c910",
+      "auto-mraby92r",
+    ],
+    relevantObservations: [
+      "obs_mrabz4s7_678f28f929cc",
+      "obs_mr9pfvq7_81ed61994402",
+      "obs_mr9pgoqb_d89920e75283",
+      "obs_mr9pfu80_ca208f683a26",
     ],
   },
   {
     query: "skill tool command",
     category: "semantic",
     relevantSessions: [
-      "backfill-019e87b0-2514-7000-b50b-1a76493f6f1d",
-      "backfill-019e87b0-253a-7000-b942-d5042370d8d6",
+      "backfill-019edb36-a086-7000-b551-335342e2e5c5",
+      "backfill-019ee048-082c-7000-a7bf-9132e6cd40df",
+      "backfill-019ee06c-1bb0-7000-965e-9426d54a5451",
+    ],
+    relevantObservations: [
+      "obs_mr9phgnz_bb9fd727483f",
+      "obs_mr9pgiwj_ba7224d68211",
+      "obs_mr9phd6x_7d8b7e57e90c",
+      "obs_mr9phf8v_6fb305f3c6e2",
     ],
   },
 ];
+
 
 interface QueryResult {
   query: string;

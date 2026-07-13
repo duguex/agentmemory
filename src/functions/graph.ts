@@ -474,16 +474,18 @@ export function registerGraphFunction(
       // minutes or days later. Reading from KV at start avoids racing
       // against a later write or a TTL/eviction between enqueue and
       // drain. IDs that no longer exist in KV are dropped defensively.
-      const observations: CompressedObservation[] = [];
-      for (const obsId of data.observationIds) {
-        const obs = await kv.get<CompressedObservation>(
-          KV.observations(data.sessionId),
-          obsId,
-        );
-        if (obs) {
-          observations.push(obs);
-        }
-      }
+      // Parallel get: serial round-trips dominate large session_end batches (#68).
+      const loaded = await Promise.all(
+        data.observationIds.map((obsId) =>
+          kv.get<CompressedObservation>(
+            KV.observations(data.sessionId),
+            obsId,
+          ),
+        ),
+      );
+      const observations = loaded.filter(
+        (obs): obs is CompressedObservation => obs != null,
+      );
       if (observations.length === 0) {
         return {
           success: false,

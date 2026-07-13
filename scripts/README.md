@@ -1,4 +1,48 @@
+# am-daemon.sh (Route-1: 稳+简)
+
+**唯一推荐的本机启停入口。** 禁止日常 `nohup … > daemon.log`（会截断日志）和半套 `pkill`（容易 engine 活、worker 死）。
+
+```bash
+bash scripts/am-daemon.sh start     # 追加日志、SUPERVISED=1、等到 true health
+bash scripts/am-daemon.sh stop      # 整树停：CLI + iii + dist/index.mjs
+bash scripts/am-daemon.sh restart
+bash scripts/am-daemon.sh status    # 进程树 + livez/health workers≥1
+bash scripts/am-daemon.sh ensure    # 不健康则重启（也可由 systemd timer 调）
+bash scripts/am-daemon.sh health    # 仅 true-health，exit 0/1
+```
+
+日志：**只追加** `~/.agentmemory/logs/daemon.log`（超 20MB 滚动保留 5 份）。
+
+可选 systemd（user）：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now agentmemory.service
+systemctl --user enable --now agentmemory-ensure.timer   # 每 2 分钟 ensure
+```
+
+环境变量 `AGENTMEMORY_SUPERVISED=1`：iii **不** detach，停主进程时一起收掉。
+
+---
+
 # AgentMemory Scripts
+
+## queue-diag.sh
+
+一键队列 / compress 诊断（P0）：
+
+```bash
+bash scripts/queue-diag.sh
+bash scripts/queue-diag.sh --log /tmp/daemon-restart.log
+bash scripts/queue-diag.sh --json
+```
+
+输出：`mem::compress` / `mem::graph-extract` depth+dlq、health 成功率、DLQ 样本
+（sessionId/observationId/error）、Ollama 加载模型、日志中 `compress.diag` 行。
+
+应用日志里可 `rg 'compress.diag' LOG` 按 `reason` 过滤：
+`orphan_observation|already_llm_compressed|auto_compress_disabled|parse_failed|llm_unavailable|compression_failed|success`。
+
 
 ## backfill-sessions.py
 

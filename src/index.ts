@@ -13,6 +13,7 @@ import {
   isGraphExtractionEnabled,
   getAutoForgetIntervalMs,
   getEvictIntervalMs,
+  isAutoForgetEnabled,
 } from "./config.js";
 import {
   createProvider,
@@ -20,6 +21,7 @@ import {
   createEmbeddingProvider,
   createImageEmbeddingProvider,
 } from "./providers/index.js";
+import { isLlmGateEnabled, getLlmGateConcurrency } from "./providers/llm-gate.js";
 import { StateKV } from "./state/kv.js";
 import { KV } from "./state/schema.js";
 import { VectorIndex } from "./state/vector-index.js";
@@ -178,6 +180,13 @@ async function main() {
   bootLog(
     `Provider: ${config.provider.provider} (${config.provider.model})`,
   );
+  bootLog(
+    `LLM chat gate: ${
+      isLlmGateEnabled()
+        ? `on (concurrency=${getLlmGateConcurrency()})`
+        : "off"
+    }`,
+  );
   if (embeddingProvider) {
     bootLog(
       `Embedding provider: ${embeddingProvider.name} (${embeddingProvider.dimensions} dims)`,
@@ -264,11 +273,13 @@ async function main() {
   // ── Periodic cleanup schedules ─────────────────────────────
   const _cleanupTimers: ReturnType<typeof setInterval>[] = [];
   const autoForgetMs = getAutoForgetIntervalMs();
-  if (autoForgetMs > 0) {
+  if (isAutoForgetEnabled() && autoForgetMs > 0) {
     bootLog(`Auto-forget: scheduled every ${autoForgetMs}ms`);
     _cleanupTimers.push(setInterval(() => {
       sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false }, action: TriggerAction.Void() }).catch(() => {});
     }, autoForgetMs).unref());
+  } else if (!isAutoForgetEnabled()) {
+    bootLog(`Auto-forget: disabled (AUTO_FORGET_ENABLED / AGENTMEMORY_AUTO_FORGET_ENABLED=false)`);
   }
 
   const evictMs = getEvictIntervalMs();
@@ -378,11 +389,10 @@ async function main() {
 
   const bm25Index = getSearchIndex();
   const graphWeight = parseFloat(getEnvVar("AGENTMEMORY_GRAPH_WEIGHT") || "0.3");
-  // Default rerank on; set RERANK_ENABLED=false to disable. The cross-encoder
-  // (Xenova/ms-marco-MiniLM) adds ~100ms over 20 docs and gives a substantial
-  // boost in MRR by reordering top-N. Disabling only makes sense for latency-
-  // critical paths where the upstream BM25/vector ranking is already good.
-  const rerankEnabled = process.env.RERANK_ENABLED !== "false";
+  // Default rerank OFF (matches HybridSearch constructor). Shared-GPU /
+  // latency-sensitive installs should not load Xenova/ms-marco on first
+  // search unless they opt in. Set RERANK_ENABLED=true to enable.
+  const rerankEnabled = process.env.RERANK_ENABLED === "true";
   const hybridSearch = new HybridSearch(
     bm25Index,
     vectorIndex,

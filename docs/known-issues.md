@@ -1,6 +1,6 @@
 # 已知问题
 
-> 当前开放的问题, 更新于 2026-07-10。每条包括: 严重度,
+> 当前开放的问题, 更新于 2026-07-13。每条包括: 严重度,
 > 根因, 怎么修。
 
 ## 开放
@@ -37,24 +37,23 @@
 - **状态**: 已知, 需要批量模式 fix 或"可接受 VRAM 保留" 的
   策略决定。
 
-### 3. 检索质量 (R@10 = 29.6%) 低于典型目标
+### 3. 观测级检索质量未标定 (session 级已可用)
 
-- **症状**: 16-query benchmark 报告 R@10=29.6%, MRR=0.224。
-  最好查询 (VASP binary cleanup, find large files) 100%, 但
-  平均被稀疏 ground truth 的查询拖低。
-- **根因**: 可能是混合原因: (a) 通用 embedding 模型 (nomic-embed
-  768d, 无微调), (b) corpus 是 commit `8756a5b` 之前的旧
-  prompt 处理的, (c) ground truth 稀疏 — 只有 16 个 hand-labeled
-  查询。
-- **严重度**: 中。搜索在分数高的具体查询上可用; 长尾质量未
-  知。
-- **修法** (没实现): 三个改动值得试, 按可能效果排序:
-  1. 用 Phase 3 prompt 通过 `scripts/upgrade-backfill-compression.py`
-     重新压缩 2460 条 obs (~10h 后台)
-  2. 扩展 ground truth 到 30-50 个查询覆盖更多 session 类型
-  3. 试更大的 embedding 模型 (`bge-large-en-v1.5` 1024d) — reindex
-     是单独操作
-- **状态**: 已知, 评估进行中。
+- **症状 / 现状 (2026-07-12)**: 刷新 GT 后 **session R@10=93.8%**, session MRR=0.750
+  (16 queries, hybrid: `npx tsx benchmark/backfill-quality-eval.ts`)。obs 级标签仍弱。
+- **Embedding 对照 (2026-07-13, vector-only)**: 在同语料 1162 docs / 16 查询上:
+  - `nomic-embed-text` 768d: R@10=**0.979**, MRR=**0.938**（最好）
+  - `nomic-embed-text-v2-moe` 768d: R@5 略升，R@10/MRR 下降 → **不换**
+  - `qwen3-embedding` 4096d: 更慢（~25×）且 R@5/MRR 明显更差 → **否**
+  - 详见 `docs/IMPROVEMENTS.md`「Phase Embedding 对照」与 `.superpowers/sdd/embed-compare-2026-07-13.json`
+- **根因（obs 级）**: (a) 评测标签与 corpus 漂移; (b) 缺/弱 obs 级金标; (c) **不是**「换个更大 embedding 就自动好」。
+- **严重度**: 中对「细粒度引用」; 低对「上下文注入」 (session 级已够用)。
+- **修法**:
+  1. 为每查询补 2–5 个 full obsId 到 `relevantObservations`（若还要 obs 级指标）
+  2. ~~试更大本地 embedding~~ **已试；本机语料无收益，保持 nomic-embed-text**
+  3. 可选: BM25/graph 权重、query expansion、开 `RERANK_ENABLED`（共享 GPU 慎用）
+- **状态**: baseline 已刷新; embedding 选型 **已冻结为 nomic-embed-text 768d**。
+
 
 ### 4. `/agentmemory/sessions` 在 100+ session 时慢
 
@@ -70,30 +69,25 @@
   刷新。
 - **状态**: 已知, 低优先级。
 
-### 5. daemon 重启可能留 orphan workers
+### 5. daemon 重启可能留 orphan workers — **supervised 下已缓解**
 
-- **症状**: daemon 崩溃 + 重启后, `/health` 显示 `workers: 2`
-  而不是 `workers: 1`。engine 上老的 worker 注册 stale 但
-  engine 没察觉。
-- **根因**: iii-engine v0.11.2 不会自动 expire stale workers。
-- **严重度**: 低。新 worker 处理所有流量; 老的只是注册的
-  no-op。
-- **修法** (workaround): 重启前 kill 任何 `node.*agentmemory`
-  进程。更好的修法: 升级 iii-engine 到会 expire stale
-  workers 的版本。
-- **状态**: 已知, workaround 有文档。
+- **症状（旧）**: daemon 崩溃 + 重启后, `/health` 显示 `workers: 2`。
+- **根因**: iii-engine v0.11.2 不 expire stale workers；旧路径 CLI import + iii-exec 双注册。
+- **现状 (2026-07-13)**: 本机 supervised 使用 `iii-config.supervised.yaml`（**无 iii-exec**）+ `scripts/am-daemon.sh`，正常 **`workers=1`**。
+- **仍可能**: 混用旧 `nohup`/手动 iii 与 am-daemon 时 residual 注册。
+- **修法**: 只用 `am-daemon.sh stop|start`；需要时 `ensure`。
+- **状态**: **本机默认路径已缓解**；非 supervised 安装仍可能双 worker。
 
-### 6. DLQ 深度会在坏 batch 进入时涨
+### 6. DLQ 深度会在失败/重启时涨
 
-- **症状**: `dlq_depth` 7/8 是 0; 7/9 又涨到 8。
-- **根因**: DLQ 重试 1 次, backoff 2s。一波坏输入 (如
-  LLM 持续解析不了的格式错 tool output) 会以 2s/obs 速率进
-  DLQ。DLQ 不会自动排空。
-- **严重度**: 低。DLQ 增长由坏输入的速率限制。用
-  `scripts/drain-dlq.py` 清空。
-- **修法** (没实现): 把 `drain-dlq.py` 安排成 cron 让 DLQ
-  保持空。
-- **状态**: 已知, 手动 drain 可用。
+- **症状**: `mem::compress` 的 `dlq_depth` 在杀 iii、半死重启、或坏 payload 后上升；旧 `am-daemon health` 仍绿。
+- **根因**: iii-queue 在 `max_retries` 耗尽后进 DLQ；compress 曾 `max_retries: 1`。错误常见 `function call failed`。
+- **严重度**: 中（可见性）。
+- **修法 (2026-07-13, #69/#71)**:
+  - `am-daemon.sh health` / `status`：**dlq>0 → exit 1**；`ensure` 不因 DLQ 重启。
+  - compress `max_retries: 1 → 3`（`iii-config*.yaml`）。
+  - 诊断: `queue-diag.sh`；重放优先 redrive；`drain-dlq.py` 仅归因后使用。
+- **状态**: 可见性已修；历史 DLQ 需人工 redrive/drain。
 
 ### 7. Query expansion 加 +40% 延迟但精度中性
 
@@ -108,6 +102,18 @@
   `AGENTMEMORY_QUERY_EXPANSION=false` 在延迟敏感路径禁用。
   或者: 只对短查询触发 expansion (长查询一般已经组织好)。
 - **状态**: 已知, env flag 已提议。
+
+### 8. OMP 注入「开了也不进 prompt」
+
+- **症状**: `~/.agentmemory/.env` 里 `AGENTMEMORY_INJECT_CONTEXT=true`，但 OMP 会话无回忆；或扩展静默不搜。
+- **根因**:
+  1. 扩展读的是 **omp 进程** 的 `process.env`，不自动加载 daemon 的 `.env`；
+  2. 无 `AGENTMEMORY_SECRET` 时 `/health` 401 → `ensureServerOk` 失败 → 整段注入跳过；
+  3. stdout 看不到 `## Recalled from memory`（在 systemPrompt）被误判为未注入。
+- **严重度**: 中（功能形同关闭）。
+- **修法**: 启动 omp 前 export `AGENTMEMORY_URL` / `SECRET` / `INJECT_CONTEXT=true`；验收用 `AGENTMEMORY_INJECT_DEBUG=true` 看 `inject ok lines=N`。
+- **状态**: 2026-07-13 CLI 已验证注入路径；文档见 `architecture.md` OMP 节与 usefulness-trial 附录 C。
+
 
 ## 已解决
 

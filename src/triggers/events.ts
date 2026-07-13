@@ -65,12 +65,19 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         const observations = await kv.list<CompressedObservation>(
           KV.observations(data.sessionId),
         );
-        // Include LLM-compressed + legacy (no compressionKind, confidence >= 0.7)
-        const compressed = observations.filter((o) =>
-          o.compressionKind === "llm" ||
-          (o.compressionKind === undefined &&
-           typeof o.confidence === "number" &&
-           o.confidence >= 0.7),
+        // Include LLM-compressed, synthetic (AUTO_COMPRESS=false path), and
+        // legacy rows (no compressionKind, confidence >= 0.7). Excluding
+        // synthetic left Knowledge Graph empty for default local installs.
+        const compressed = observations.filter(
+          (o) =>
+            o.compressionKind === "llm" ||
+            o.compressionKind === "synthetic" ||
+            (o.compressionKind === undefined &&
+              typeof o.confidence === "number" &&
+              o.confidence >= 0.7) ||
+            (o.compressionKind === undefined &&
+              typeof o.title === "string" &&
+              o.title.trim().length > 0),
         );
         if (compressed.length > 0) {
           sdk.trigger({

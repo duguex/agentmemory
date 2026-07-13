@@ -88,20 +88,26 @@ function makeObs(id: string): CompressedObservation {
 }
 
 describe("events.ts graph-extract filter", () => {
-  it("includes legacy observations (no compressionKind) with confidence>=0.7", () => {
+  it("includes llm, synthetic, and high-confidence legacy observations", () => {
     const observations = [
-      { id: "obs-1", title: "t", confidence: 0.8 }, // legacy
-      { id: "obs-2", title: "t", confidence: 0.3, compressionKind: "synthetic" as const }, // synthetic, exclude
-      { id: "obs-3", title: "t", confidence: 0.9, compressionKind: "llm" as const }, // LLM, include
-      { id: "obs-4", title: "t", confidence: 0.5 }, // legacy low confidence, exclude
+      { id: "obs-1", title: "t", confidence: 0.8 }, // legacy high conf
+      { id: "obs-2", title: "t", confidence: 0.3, compressionKind: "synthetic" as const }, // synthetic — include for AUTO_COMPRESS=false
+      { id: "obs-3", title: "t", confidence: 0.9, compressionKind: "llm" as const }, // LLM
+      { id: "obs-4", title: "t", confidence: 0.5 }, // legacy low conf but has title — include via title fallback
+      { id: "obs-5", title: "", confidence: 0.2 }, // empty title, low conf — exclude
     ];
-    const filtered = observations.filter((o) =>
-      o.compressionKind === "llm" ||
-      (o.compressionKind === undefined &&
-       typeof o.confidence === "number" &&
-       o.confidence >= 0.7),
+    const filtered = observations.filter(
+      (o) =>
+        o.compressionKind === "llm" ||
+        o.compressionKind === "synthetic" ||
+        (o.compressionKind === undefined &&
+          typeof o.confidence === "number" &&
+          o.confidence >= 0.7) ||
+        (o.compressionKind === undefined &&
+          typeof o.title === "string" &&
+          o.title.trim().length > 0),
     );
-    expect(filtered.map((o) => o.id)).toEqual(["obs-1", "obs-3"]);
+    expect(filtered.map((o) => o.id)).toEqual(["obs-1", "obs-2", "obs-3", "obs-4"]);
   });
 });
 

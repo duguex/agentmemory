@@ -1,20 +1,59 @@
 # 改进追踪
 
-> agentmemory backfill 观测和检索质量的改动历史。更新于 2026-07-10。
+> agentmemory backfill 观测和检索质量的改动历史。更新于 2026-07-13。
 
 ## 系统现在什么样
 
 | 指标 | 值 |
 |---|---|
-| 观测 | 2460 条 backfill (100% LLM 压缩) |
-| Session | 94 个 backfill + 活跃 |
-| 检索质量 (R@10 / MRR) | 29.6% / 0.224 (16-query 标注集) |
-| Daemon | 健康, 单进程, 熔断关闭 |
-| DLQ | 0 (从 5538 排空, 2026-07-08) |
-| 开放 issue | 21 (15 原有 + 6 本次新增) |
+| 观测 | live + backfill 混合 (索引约 3k+ docs, 随时间变) |
+| Session | 200+ (含 vasp backfill 与 auto-* live) |
+| 检索质量 (session R@10 / MRR) | **93.8% / 0.750** hybrid (2026-07-12 GT); vector-only 对照见下 |
+| Embedding | **保持 nomic-embed-text 768d**；qwen3-embedding / nomic-v2-moe 本机对照无整体提升 |
+| 有用性代理 (Ollama A/B 锚点) | HA=0.56 → HB=0.88 (Δ+0.32); 见 usefulness-trial 附录 B |
+| OMP 注入 | **CLI 已验证** inject ok lines=5; 需进程 env SECRET+INJECT |
+| Daemon 运维 | **`scripts/am-daemon.sh`** + `iii-config.supervised.yaml` → **workers=1**；compress 关思考 + gate conc=2 |
 
-看一行状态, 跑 `bash scripts/status.sh`。
-看全貌, 见 `docs/architecture.md` 和 `docs/known-issues.md`。
+看一行状态: `bash scripts/am-daemon.sh status` 或 `bash scripts/health.sh`。  
+看全貌: `docs/architecture.md`、`docs/known-issues.md`。  
+有用性检验协议: `docs/superpowers/plans/2026-07-13-usefulness-trial.md`。
+
+## Phase 运维与 OMP 验收 (2026-07-13)
+
+**目标**: 稳+简默认路径；证明 OMP 注入真路径，而非只 curl REST。
+
+| 改动 | 位置 | 备注 |
+|---|---|---|
+| 监督启停 / 真健康 / 追加日志 | `scripts/am-daemon.sh` | 唯一推荐日常入口 |
+| Supervised 单 worker 配置 | `iii-config.supervised.yaml` | 无 iii-exec；`AGENTMEMORY_III_CONFIG` |
+| SUPERVISED spawn | `src/cli.ts` | iii 不 detach |
+| OMP inject debug 开关 | `integrations/omp/index.ts` | `AGENTMEMORY_INJECT_DEBUG=true` |
+| OMP 说明 | `integrations/omp/README.md` | env 必须在 omp 进程 |
+| 架构 / 已知问题 / 有用性试验 | `docs/architecture.md` 等 | 2026-07-13 更新 |
+
+**OMP CLI 验收**: `INJECT=true` → stderr `inject ok lines=N`；`INJECT=false` → `skip: INJECT_CONTEXT not true`。
+
+## Phase Embedding 对照 (2026-07-13)
+
+**目标**: 在本机 VASP/代码语料上比较 Ollama embedding 候选，决定是否换模 + 全量 reindex。
+
+**方法（vector-only，非 hybrid）**:
+
+- 语料: 评测 GT 涉及的 27 session → **1162** obs 文本（title+subtitle+narrative）
+- 查询: `benchmark/backfill-quality-eval.ts` 中 **16** 条带 `relevantSessions` 的标注
+- 指标: 余弦排序后的 session **R@5 / R@10 / MRR**
+- 原始 JSON: `.superpowers/sdd/embed-compare-2026-07-13.json`
+
+| 模型 | dim | s/doc | session R@5 | session R@10 | MRR | 结论 |
+|---|---:|---:|---:|---:|---:|---|
+| **nomic-embed-text（当前）** | 768 | **0.024** | 0.776 | **0.979** | **0.938** | **保留** |
+| nomic-embed-text-v2-moe | 768 | 0.041 | **0.823** | 0.964 | 0.854 | R@5 略好，R@10/MRR 变差；不换 |
+| qwen3-embedding | **4096** | **0.598** | 0.573 | 0.896 | 0.585 | 更慢更差；需改维+全量 rebuild；否 |
+
+**决策**: 不切换 embedding。提检索优先 query/GT/BM25 权重，而非换 embedding。线上 hybrid 仍为 BM25+Vector+Graph（rerank 默认关）。
+
+
+
 
 ## Phase 1 — DLQ 清理
 

@@ -54,22 +54,8 @@ workers:
       enabled: true
       service_name: agentmemory
       exporter: memory
-      # 0.1 instead of 1.0: at full sampling under sustained load the
-      # log subscriber falls behind, the worker emits a "Log trigger
-      # subscriber lagged" WARN, and that WARN re-enters the same
-      # stream the subscriber is failing to drain — a positive
-      # feedback loop that wrote 137 GB to daemon.log.new on one user
-      # in a few days (#519).
+      # See iii-config.yaml for the rationale on 0.1 / console-off (#519).
       sampling_ratio: 0.1
       metrics_enabled: true
       logs_enabled: true
-      # Console output is off by default; the feedback path needs the
-      # console layer to amplify. Re-enable per-session via env if you
-      # need verbose tracing for debugging.
       logs_console_output: false
-  - name: iii-exec
-    config:
-      watch:
-        - src/**/*.ts
-      exec:
-        - node dist/index.mjs

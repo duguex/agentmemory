@@ -190,6 +190,31 @@ export function getAutoForgetIntervalMs(): number {
 	return safeParseInt(val, 3_600_000) || 3_600_000;
 }
 
+/**
+ * Explicit on/off for the auto-forget timer. Restores the pre-0.9
+ * AUTO_FORGET_ENABLED kill switch so upgrades do not silently start
+ * pruning production corpora. Prefer AGENTMEMORY_AUTO_FORGET_ENABLED;
+ * bare AUTO_FORGET_ENABLED is still honored with a deprecation warn.
+ *
+ * When unset: enabled (interval still controls cadence; 0 disables).
+ * When "false"/"0"/"off"/"no": disabled regardless of interval.
+ */
+let autoForgetEnabledLegacyWarned = false;
+export function isAutoForgetEnabled(): boolean {
+  const modern = getEnvVar("AGENTMEMORY_AUTO_FORGET_ENABLED");
+  const legacy = process.env.AUTO_FORGET_ENABLED;
+  const raw = modern ?? legacy;
+  if (legacy !== undefined && modern === undefined && !autoForgetEnabledLegacyWarned) {
+    autoForgetEnabledLegacyWarned = true;
+    console.warn(
+      "[agentmemory] AUTO_FORGET_ENABLED is deprecated; rename to AGENTMEMORY_AUTO_FORGET_ENABLED. The old name will be removed in v0.12.",
+    );
+  }
+  if (raw === undefined || raw === "") return true;
+  const v = raw.trim().toLowerCase();
+  return v !== "false" && v !== "0" && v !== "off" && v !== "no";
+}
+
 export function getEvictIntervalMs(): number {
 	// #33: use safeParseInt for consistency with the rest of the file.
 	const val = getEnvVar("AGENTMEMORY_EVICT_INTERVAL") || "";

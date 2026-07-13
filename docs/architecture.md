@@ -1,6 +1,6 @@
 # agentmemory 架构
 
-> 一张图说明系统是什么。更新于 2026-07-10。
+> 一张图说明系统是什么。更新于 2026-07-13。
 
 ## 整体
 
@@ -43,14 +43,19 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**四个进程。这就是整个系统。**
+**进程模型（本机推荐：supervised / C-cli）**
 
 | 进程 | 由谁启动 | 拥有 |
 |---|---|---|
-| **agent** | (用户) | (只调 hook 脚本) |
-| **iii-engine** | agentmemory daemon (spawn) | HTTP 3111、队列、KV |
-| **agentmemory daemon** | `nohup agentmemory` (手动) | 270 个函数 |
-| **Ollama** | (系统服务) | GPU + LLM 模型 |
+| **agent**（OMP / Claude / …） | 用户 | hooks / 扩展；可选 **注入** 回忆 |
+| **agentmemory CLI**（单 worker） | `scripts/am-daemon.sh` 或 systemd | `import("./index.js")` 注册全部 `mem::*` / API |
+| **iii-engine** | CLI 子进程（`AGENTMEMORY_SUPERVISED=1` 时不 detach） | HTTP 3111、队列、KV；配置 **`iii-config.supervised.yaml`**（无 iii-exec 第二 worker） |
+| **Ollama**（可选） | 系统服务 | 本地 chat / embed |
+
+日常启停：**只用** `bash scripts/am-daemon.sh {start,stop,restart,status,ensure,health}`。  
+禁止日常 `nohup agentmemory > log`（截断日志）和半套 `pkill`（易半死：engine 活、worker 死）。  
+决策与验收：`docs/superpowers/plans/2026-07-13-on-track-stable-simple.md`。
+
 
 ## 观测从哪来
 
@@ -327,16 +332,61 @@ absorb 第一次 idle 后 30-60s 冷加载延迟的。
 | **mem::compress** | LLM 压缩处理器 | `src/functions/compress.ts` |
 | **队列** | 内置 iii-queue, file-based | `iii-config.yaml` |
 | **StateKV** | per-scope SQLite | `src/state/kv.ts` |
-| **向量索引** | nomic-embed-text 768d | `src/state/vector-index.ts` |
+| **向量索引** | **nomic-embed-text 768d**（Ollama；2026-07-13 对照 v2-moe / qwen3-embedding 后仍保留） | `src/state/vector-index.ts` |
 | **BM25 索引** | per-shard 倒排索引 | `src/state/search-index.ts` |
 | **HybridSearch** | BM25 + 向量 + 图 + rerank 融合 | `src/state/hybrid-search.ts` |
 | **Reranker** | 跨编码器 (ms-marco-MiniLM) | `src/state/reranker.ts` |
 | **LLM provider** | OpenAI 兼容 → Ollama | `src/providers/openai.ts` |
 | **Query expansion** | LLM 改写 (可选) | `src/functions/query-expansion.ts` |
 | **图抽取** | 实体 + 关系 | `src/functions/graph-extract.ts` |
-| **OMP 集成** | OMP/Pi agent ↔ agentmemory 桥 | `integrations/omp/index.ts` |
-| **Status / 诊断** | 一次性系统状态 | `scripts/status.sh`, `scripts/health.sh` |
-| **Trace 单条 obs** | 跟踪一条记录全流程 | `scripts/trace-obs.sh` |
+| **OMP 集成** | 观察 + 可选注入（见下节） | `integrations/omp/index.ts` |
+| **运维入口** | 整树启停 / 真健康 / 日志追加 | `scripts/am-daemon.sh` |
+| **Status / 诊断** | 队列、health、单条 obs | `scripts/status.sh`, `health.sh`, `queue-diag.sh`, `trace-obs.sh` |
+
+## OMP 注入（已 CLI 验证 2026-07-13）
+
+OMP 扩展路径与 Claude 的 `enrich` hook **不是同一条线**。
+
+```text
+OMP before_agent_start
+  → 若 process.env.AGENTMEMORY_INJECT_CONTEXT === "true"
+  → ensureServerOk()  // GET /agentmemory/health（需 Bearer）
+  → POST /agentmemory/search { query: userPrompt, limit: 5, format: "narrative" }
+  → systemPrompt 追加:
+        ## Recalled from memory
+          [type] title — narrative
+  → 每个 OMP session 只注入一次（sessionInjected）
+```
+
+**环境变量必须在「启动 omp 的进程」里**（扩展读 `process.env`，不自动读 daemon 的 `~/.agentmemory/.env`）：
+
+| 变量 | 作用 |
+|------|------|
+| `AGENTMEMORY_URL` | 默认 `http://localhost:3111` |
+| `AGENTMEMORY_SECRET` | **必填**（本机常用 `omp-memory-local`）；缺则 health 401，注入整段跳过 |
+| `AGENTMEMORY_INJECT_CONTEXT=true` | 打开注入；默认关则只观察不改 prompt |
+| `AGENTMEMORY_INJECT_DEBUG=true` | stderr 打印 `[agentmemory:inject] …`（验收用） |
+
+**命令行验收（非交互）：**
+
+```bash
+export AGENTMEMORY_URL=http://localhost:3111
+export AGENTMEMORY_SECRET=omp-memory-local
+export AGENTMEMORY_INJECT_CONTEXT=true
+export AGENTMEMORY_INJECT_DEBUG=true
+
+omp -p --no-session --no-tools --thinking=off --max-time=100 \
+  --cwd /path/to/agentmemory \
+  "你的问题…"
+# 期望 stderr: inject ok lines=N
+# 关 INJECT 时期望: skip: INJECT_CONTEXT not true
+```
+
+扩展挂载：`~/.omp/agent/settings.json` → `"extensions": ["…/integrations/omp/index.ts"]`。  
+详细记录：`docs/superpowers/plans/2026-07-13-usefulness-trial.md` 附录 C。
+
+**注意：** print 模式 stdout **通常看不到** `## Recalled from memory`（在 systemPrompt）。以 debug 行或模型是否用到回忆内容为准。
+
 
 ## 什么不在范围内 (设计上的取舍)
 

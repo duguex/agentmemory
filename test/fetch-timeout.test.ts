@@ -207,8 +207,12 @@ describe("Provider hang regression — OpenRouterEmbeddingProvider", () => {
 // ─────────────────────────────────────────────────────────────
 describe("OpenAIProvider timeout env precedence (#446)", () => {
   beforeEach(() => {
-    delete process.env["OPENAI_TIMEOUT_MS"];
-    delete process.env["AGENTMEMORY_LLM_TIMEOUT_MS"];
+    // getEnvVar merges ~/.agentmemory/.env under process.env. Deleting
+    // keys alone leaves the file values (e.g. OPENAI_TIMEOUT_MS=300000
+    // on shared-GPU installs). Force empty strings so file env cannot
+    // leak into unit tests.
+    process.env["OPENAI_TIMEOUT_MS"] = "";
+    process.env["AGENTMEMORY_LLM_TIMEOUT_MS"] = "";
     vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch as typeof fetch);
   });
   afterEach(() => {

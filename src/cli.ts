@@ -74,6 +74,14 @@ const IS_VERBOSE =
   process.env["AGENTMEMORY_VERBOSE"] === "1" ||
   process.env["AGENTMEMORY_VERBOSE"] === "true";
 
+/** systemd / am-daemon: keep iii in the same process tree (no detach/unref). */
+function isSupervisedMode(): boolean {
+  const v = process.env["AGENTMEMORY_SUPERVISED"];
+  if (v === undefined || v === "") return false;
+  const lower = v.trim().toLowerCase();
+  return lower !== "0" && lower !== "false" && lower !== "no" && lower !== "off";
+}
+
 // Propagate the resolved verbosity to the worker's boot logger so the
 // 25-line `[agentmemory] X registered` stream is either dropped or
 // printed verbatim. Without this the worker's default (env-only) would
@@ -847,17 +855,23 @@ type StartupFailure = {
 let startupFailure: StartupFailure | null = null;
 
 // Spawn a background engine and collect any startup stderr for a short
-// window. The process is unref'd so the CLI parent can exit cleanly; we
-// only care about stderr that shows up BEFORE the health check succeeds,
-// which is what surfaces early crash/config-parse errors on all platforms.
+// window. By default the process is detached+unref so interactive CLI
+// can exit cleanly after demos. Under AGENTMEMORY_SUPERVISED=1 (systemd
+// / scripts/am-daemon.sh) we keep the engine in-process-tree so a
+// stop/kill of the main unit tears down iii + its exec worker together
+// instead of leaving a half-dead orphan engine on :3111.
 function spawnEngineBackground(
   bin: string,
   spawnArgs: string[],
   label: string,
 ): ChildProcess {
-  vlog(`spawn: ${bin} ${spawnArgs.join(" ")}`);
+  const supervised = isSupervisedMode();
+  vlog(
+    `spawn: ${bin} ${spawnArgs.join(" ")}` +
+      (supervised ? " (supervised: not detached)" : " (detached)"),
+  );
   const child = spawn(bin, spawnArgs, {
-    detached: true,
+    detached: !supervised,
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });
@@ -896,7 +910,9 @@ function spawnEngineBackground(
       clearEngineState();
     }
   });
-  child.unref();
+  if (!supervised) {
+    child.unref();
+  }
   return child;
 }
 

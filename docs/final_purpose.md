@@ -1,6 +1,6 @@
 # 最终目标
 
-> 7/2 设计目标的当前状态, 更新于 2026-07-10。
+> 7/2 设计目标的当前状态, 更新于 2026-07-12。
 
 ## 原始目标 (2026-07-02 定)
 
@@ -19,40 +19,30 @@
 
 | # | 目标 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | 高质量可检索记忆 | **基本达成, 检索质量一般** | 2460 条 backfill obs, 100% LLM 压缩。Eval R@10=29.6%, MRR=0.224 (16 个 hand-labeled 查询)。最好查询 100% (VASP binary cleanup, find large files)。 |
-| 2 | 适配不同 agent | **部分达成** | OMP 集成完全接好。Claude/Codex/OpenCode hooks 存在但测试期间没跑过。 |
+| 1 | 高质量可检索记忆 | **基本达成; session 级检索可用, obs 级未标** | 语料仍在增长 (live + backfill)。**2026-07-12 刷新 GT 后**: session R@10=**93.8%**, session MRR=**0.750**, avg latency ~592ms (16 labeled queries, `benchmark/backfill-quality-eval.ts`)。旧数字 R@10=29.6%/MRR=0.224 的 GT session 已几乎不存在 (11 里仅 1 仍在), 不可再当 baseline。obs 级 R@10 仍为 0% — 当前 GT **只标 session 不标 observation**。 |
+| 2 | 适配不同 agent | **部分达成** | OMP 集成完全接好。Claude/Codex/OpenCode hooks 存在; 本 fork 可靠性 P0 (#65–#67) 已修并部署。 |
 | T1 | 统一 backfill + 实时流水线 | **达成** | `scripts/backfill-sessions.py` 复用 `/observe` 端点。LLM 调用是同一个 `mem::compress` handler。见 `docs/architecture.md` 的两条路径图。 |
-| T2 | 用队列处理高 LLM 流量 | **达成, 有已知限制** | `mem::compress` 队列 absorb 延迟、重试、还有 LLM 不可用 (commit `426d1fa`)。**per-obs LLM 调用**是吞吐瓶颈 —— 见下面"已知限制"。 |
+| T2 | 用队列处理高 LLM 流量 | **达成, 有已知限制** | `mem::compress` 队列 absorb 延迟、重试、还有 LLM 不可用。**per-obs LLM 调用**是吞吐瓶颈 (优先级最低, 暂不优化)。 |
 
 ## 影响这些目标的已知限制
 
 这些不是 blocker, 但在声称"目标达成"前值得知道:
 
-- **检索质量 (R@10=29.6%) 低于典型生产目标 (≥50%)**。根因:
-  GT 稀疏 (16 查询, 5 类), embedding 模型通用 (nomic-embed
-  768d), ~2460 obs 用旧 prompt 处理的。用 Phase 3 prompt
-  (commit `8756a5b`) 重新压缩是剩余工作中最高杠杆的一项。
-- **没有批量 LLM 调用**。每条 obs 是独立的 LLM 调用, 这对
-  正确性是对的但对吞吐是错的。1 obs = 1 调用, ~5s/obs,
-  队列峰值能排 ~12 obs/min。批量模式让一次冷加载处理 N 条 obs
-  在一次推理里。
-- **daemon 运行时 24GB VRAM 永远占着**。Ollama 5 分钟卸载
-  只在队列空 5+ 分钟时触发。这是 commit `0b43c4c` 的设计选择,
-  但如果 GPU 跟其他工作共享就值得知道。
+- **Session 级检索已可用 (R@10≈94%), 但观测级 GT 仍可加强**。下一杠杆: 为关键查询补 `relevantObservations` 细粒度标签（若需要 obs 级指标）。
+- **Embedding 选型 (2026-07-13)**: 本机对照 `nomic-embed-text` vs `nomic-embed-text-v2-moe` vs `qwen3-embedding`（vector-only）。**保持 nomic-embed-text 768d**；后两者无整体提升（qwen3 更慢更差）。见 `docs/IMPROVEMENTS.md` Embedding 对照。
+- **没有批量 LLM 调用**。每条 obs 独立 LLM 调用; 已用 `OPENAI_REASONING_EFFORT=none` + gate concurrency=2 改善吞吐; 积压仍可能。
+- **daemon 运行时大模型 VRAM 常驻**。Ollama 仅在队列空闲后卸载; 共享 GPU 场景敏感。
+- **评测 GT 会过期**。corpus 漂移会让旧 R@10 失真; 大清洗后应重标。
 
 ## 怎么收尾 gap
 
-如果想要 R@10 ≥ 50% 但不想继续迭代:
+若要在 **观测级** 质量上继续提升 (session 级已够用上下文注入):
 
-1. **用 Phase 3 prompt 重新压缩 2460 条 obs** (~10 小时后
-   台)。跑 `scripts/upgrade-backfill-compression.py`。
-2. **扩展 GT 到 30-50 个查询**, 让 eval 信号稳定。16 太
-   少。
-3. **试更大的 embedding 模型** (如 `bge-large-en-v1.5` 1024d)。
-   Reindex 是单独 commit。
+1. **补 obs 级 GT** (每查询 2–5 个 `relevantObservations` full id)。
+2. ~~试更大的本地 embedding + reindex~~ **已试，本机无收益；勿为换模而 reindex**。
+3. 可选: Phase 3 prompt 重压仍为 synthetic/旧 narrative 的子集。
 
-如果只关心 *corpus 存在* + 检索质量够用于上下文注入, 系统已
-经可用。跑 `bash scripts/status.sh` 确认 daemon 健康。
+如果只关心 *corpus 存在* + session 级召回够用, 系统已经可用。跑 `bash scripts/status.sh` 确认 daemon 健康; 评测: `npx tsx benchmark/backfill-quality-eval.ts`。
 
 ## 另见
 

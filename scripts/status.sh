@@ -65,8 +65,8 @@ HEALTH=$(curl -s -m 5 "$AGENTMEMORY_URL/agentmemory/health" -H "Authorization: B
 if [ -z "$HEALTH" ] || ! echo "$HEALTH" | python3 -c "import sys,json; json.loads(sys.stdin.read())" 2>/dev/null; then
   fail "daemon not responding at $AGENTMEMORY_URL"
   echo
-  echo "  Hint: check if the worker.pid process is alive, or restart:"
-  echo "    nohup agentmemory > /tmp/daemon.log 2>&1 &"
+  echo "  Hint: bash scripts/am-daemon.sh status"
+  echo "    or: bash scripts/am-daemon.sh restart"
   exit 0
 fi
 

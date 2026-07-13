@@ -25,6 +25,70 @@ import type { MetricsStore } from "../eval/metrics-store.js";
 import { logger } from "../logger.js";
 import { isAutoCompressEnabled } from "../config.js";
 
+/** Stable reason codes for queue / log diagnostics (grep: compress.diag). */
+export type CompressDiagReason =
+  | "orphan_observation"
+  | "already_llm_compressed"
+  | "auto_compress_disabled"
+  | "parse_failed"
+  | "compression_marker_missing"
+  | "llm_unavailable"
+  | "compression_failed"
+  | "success";
+
+const DIAG_ERROR_MAX = 400;
+const DIAG_PREVIEW_MAX = 240;
+
+/** Truncate free-form strings for structured logs (no huge LLM dumps). */
+export function truncateDiag(s: string, max = DIAG_ERROR_MAX): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…(+${s.length - max}c)`;
+}
+
+function logCompressDiag(
+  level: "info" | "warn" | "error",
+  msg: string,
+  fields: {
+    reason: CompressDiagReason;
+    sessionId: string;
+    observationId: string;
+    latencyMs?: number;
+    error?: string;
+    retried?: boolean;
+    responsePreview?: string;
+    qualityScore?: number;
+    type?: string;
+    importance?: number;
+  },
+): void {
+  const payload: Record<string, unknown> = {
+    component: "mem::compress",
+    event: "compress.diag",
+    reason: fields.reason,
+    sessionId: fields.sessionId,
+    observationId: fields.observationId,
+    // back-compat for existing greps
+    obsId: fields.observationId,
+  };
+  if (fields.latencyMs !== undefined) payload.latencyMs = fields.latencyMs;
+  if (fields.error !== undefined) {
+    payload.error = truncateDiag(fields.error, DIAG_ERROR_MAX);
+  }
+  if (fields.retried !== undefined) payload.retried = fields.retried;
+  if (fields.responsePreview !== undefined) {
+    payload.responsePreview = truncateDiag(
+      fields.responsePreview,
+      DIAG_PREVIEW_MAX,
+    );
+  }
+  if (fields.qualityScore !== undefined) {
+    payload.qualityScore = fields.qualityScore;
+  }
+  if (fields.type !== undefined) payload.type = fields.type;
+  if (fields.importance !== undefined) payload.importance = fields.importance;
+  logger[level](msg, payload);
+}
+
 const VALID_TYPES = new Set<string>([
   "file_read",
   "file_write",
@@ -93,14 +157,19 @@ export function registerCompressFunction(
         // Ack with success so the engine doesn't retry or DLQ — the
         // obs is gone, retrying achieves nothing. Logs a warn for
         // observability.
-        logger.warn("compress: orphan observation, skipping", {
-          obsId: data.observationId,
+        const latencyMs = Date.now() - startMs;
+        logCompressDiag("warn", "compress.diag orphan skip", {
+          reason: "orphan_observation",
           sessionId: data.sessionId,
+          observationId: data.observationId,
+          latencyMs,
         });
         return {
           success: true,
           skipped: true,
           reason: "orphan_observation",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
         };
       }
 
@@ -109,10 +178,22 @@ export function registerCompressFunction(
       // "llm" has already been through this code path and re-running would
       // waste tokens and overwrite better-tuned fields.
       if ((raw as CompressedObservation).compressionKind === "llm") {
+        // success:true so the queue acks (no retry/DLQ) and metrics do not
+        // count intentional no-ops as failures — re-enqueue of already-LLM
+        // obs is common after restarts and backfill catch-up.
+        const latencyMs = Date.now() - startMs;
+        logCompressDiag("info", "compress.diag already llm skip", {
+          reason: "already_llm_compressed",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
+          latencyMs,
+        });
         return {
-          success: false,
+          success: true,
           skipped: true,
-          reason: "already LLM-compressed",
+          reason: "already_llm_compressed",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
         };
       }
 
@@ -123,12 +204,25 @@ export function registerCompressFunction(
       // disabled the feature. We refuse to spend tokens here rather than
       // risk silent re-compression.
       if (!isAutoCompressEnabled()) {
+        // success:true: pending queue messages after the user disables
+        // auto-compress must drain cleanly without inflating failureRate
+        // or bouncing into DLQ.
+        const latencyMs = Date.now() - startMs;
+        logCompressDiag("info", "compress.diag auto-compress off skip", {
+          reason: "auto_compress_disabled",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
+          latencyMs,
+        });
         return {
-          success: false,
+          success: true,
           skipped: true,
-          reason: "auto-compress disabled",
+          reason: "auto_compress_disabled",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
         };
       }
+
 
       let imageDescription: string | undefined;
       const hasImage = raw.modality === "image" || raw.modality === "mixed";
@@ -205,11 +299,23 @@ export function registerCompressFunction(
           if (metricsStore) {
             await metricsStore.record("mem::compress", latencyMs, false);
           }
-          logger.warn("Failed to parse compression XML", {
-            obsId: data.observationId,
+          logCompressDiag("warn", "compress.diag parse_failed", {
+            reason: "parse_failed",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+            latencyMs,
             retried,
+            error: "parse_failed",
+            responsePreview: response,
           });
-          return { success: false, error: "parse_failed" };
+          return {
+            success: false,
+            error: "parse_failed",
+            reason: "parse_failed",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+            retried,
+          };
         }
 
         const qualityScore = scoreCompression(parsed);
@@ -237,12 +343,21 @@ export function registerCompressFunction(
         // type marked them as required; this assertion catches any future
         // regression where the field set gets pruned upstream of this function.
         if (!compressed.compressionKind || !compressed.compressionVersion) {
-          logger.error("Compression marker missing before writeback", {
-            obsId: data.observationId,
-            compressionKind: compressed.compressionKind,
-            compressionVersion: compressed.compressionVersion,
+          const latencyMs = Date.now() - startMs;
+          logCompressDiag("error", "compress.diag compression_marker_missing", {
+            reason: "compression_marker_missing",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+            latencyMs,
+            error: "compression_marker_missing",
           });
-          return { success: false, error: "compression_marker_missing" };
+          return {
+            success: false,
+            error: "compression_marker_missing",
+            reason: "compression_marker_missing",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+          };
         }
 
         // Bypass iii-engine v0.11.2 per-key schema lock on overwrite:
@@ -340,12 +455,15 @@ export function registerCompressFunction(
           );
         }
 
-        logger.info("Observation compressed", {
-          obsId: data.observationId,
+        logCompressDiag("info", "compress.diag success", {
+          reason: "success",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
+          latencyMs,
+          retried,
+          qualityScore,
           type: compressed.type,
           importance: compressed.importance,
-          qualityScore,
-          retried,
         });
 
         return { success: true, compressed, qualityScore };
@@ -364,21 +482,37 @@ export function registerCompressFunction(
         // indicates a request that won't fix itself — return
         // {success:false} so the engine retries 1x and then DLQs.
         if (OpenAIProvider.isLlmUnavailable(err)) {
-          logger.info("compress: LLM unavailable, holding obs in queue", {
-            obsId: data.observationId,
+          logCompressDiag("warn", "compress.diag llm_unavailable", {
+            reason: "llm_unavailable",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+            latencyMs,
             error: msg,
           });
           return {
             success: true,
             skipped: true,
             reason: "llm_unavailable",
+            sessionId: data.sessionId,
+            observationId: data.observationId,
+            error: truncateDiag(msg),
           };
         }
-        logger.error("Compression failed", {
-          obsId: data.observationId,
+        logCompressDiag("error", "compress.diag compression_failed", {
+          reason: "compression_failed",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
+          latencyMs,
           error: msg,
         });
-        return { success: false, error: "compression_failed" };
+        return {
+          success: false,
+          error: "compression_failed",
+          reason: "compression_failed",
+          sessionId: data.sessionId,
+          observationId: data.observationId,
+          detail: truncateDiag(msg),
+        };
       }
     },
   );

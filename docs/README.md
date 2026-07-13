@@ -15,25 +15,28 @@
 
 按用途:
 
-- **新人加入项目** → 顺序读全部 4 个 (~30 分钟)
-- **想理解系统怎么工作** → architecture.md
+- **新人加入项目** → 顺序读全部 4 个核心文档 (~30 分钟)
+- **本机怎么开/停 daemon** → `bash ../scripts/am-daemon.sh status` + `architecture.md` 进程模型
+- **OMP 注入怎么开** → [`../integrations/omp/README.md`](../integrations/omp/README.md) + `architecture.md`「OMP 注入」节
+- **是否真有用** → [`superpowers/plans/2026-07-13-usefulness-trial.md`](./superpowers/plans/2026-07-13-usefulness-trial.md)
+- **稳+简正轨计划** → [`superpowers/plans/2026-07-13-on-track-stable-simple.md`](./superpowers/plans/2026-07-13-on-track-stable-simple.md)
 - **想看最近的改动** → IMPROVEMENTS.md (按 phase 倒序读最新)
 - **想看还有什么是 broken** → known-issues.md
-- **想评估系统是否达到目标** → final_purpose.md
 
 按紧急度:
 
-- **出问题先看** → `bash ../scripts/status.sh`, 再看 architecture.md 的 "Known limitations" 段
-- **想改代码** → IMPROVEMENTS.md 找相关 phase, 再看 known-issues.md 找未解决的相关问题
+- **出问题先看** → `bash ../scripts/am-daemon.sh health` / `status`，再看 architecture「已知限制」与 known-issues
+- **想改代码** → IMPROVEMENTS.md 找相关 phase, 再看 known-issues.md
 
 ## 其他文档
 
-- `recipes/` — 实用配方(对比不同 agent 的检索质量等)
+- `superpowers/plans/` — 正轨计划、有用性检验、历史实现计划
+- `../.superpowers/sdd/embed-compare-2026-07-13.json` — 本机 embedding 对照原始结果（nomic vs v2-moe vs qwen3）
+- `../integrations/omp/README.md` — OMP 扩展 env 与 CLI 验收
+- `recipes/` — 实用配方
 - `benchmarks/` — 历史 benchmark 报告
-- `issues/` — 本地 issue 记录(代码 review 时的 P0-P2 发现)
-- `reviews/` — 之前的代码 review 报告
+- `issues/` / `reviews/` — 本地 issue 与 review
 
-这些是历史/参考材料, 跟 4 个核心文档不重复。
 
 ## 文档维护规则
 

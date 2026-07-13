@@ -1,6 +1,6 @@
 #!/bin/bash
 # Minimal status — bypasses /sessions endpoint (which can be slow).
-# Shows what we can quickly observe.
+# Route-1: also verifies process tree (engine + worker), not just HTTP.
 #
 # Usage: bash scripts/health.sh
 
@@ -8,8 +8,32 @@ set -e
 SECRET="${AGENTMEMORY_SECRET:-omp-memory-local}"
 URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 III="${III_BIN:-/home/duguex/.agentmemory/bin/iii}"
+AGENTMEMORY_HOME="${AGENTMEMORY_HOME:-$HOME/.agentmemory}"
+LOG_FILE="${AGENTMEMORY_HOME}/logs/daemon.log"
 
 echo "═══ Agentmemory quick health ═══"
+echo
+
+# 0. Process tree (half-dead detection)
+echo "── Processes ──"
+if pgrep -f 'iii --config' >/dev/null 2>&1; then
+  echo "  ✓ iii-engine running"
+else
+  echo "  ✗ iii-engine missing"
+fi
+if pgrep -f 'bin/agentmemory|@agentmemory/agentmemory/dist/cli' >/dev/null 2>&1; then
+  echo "  ✓ agentmemory CLI/worker"
+else
+  echo "  ! agentmemory CLI not found (ok if only exec worker)"
+fi
+if pgrep -f 'node dist/index\.mjs|@agentmemory/agentmemory/dist/index|agentmemory/dist/index' >/dev/null 2>&1; then
+  echo "  ✓ node dist/index.mjs (exec worker)"
+else
+  echo "  ! no dist/index.mjs worker"
+fi
+if ! pgrep -f 'iii --config' >/dev/null 2>&1; then
+  echo "  hint: bash scripts/am-daemon.sh restart"
+fi
 echo
 
 # 1. Daemon health (fast, <100ms)
@@ -17,7 +41,8 @@ echo "── Daemon ──"
 HEALTH=$(curl -m 3 -s "$URL/agentmemory/health" -H "Authorization: Bearer $SECRET" 2>/dev/null)
 if [ -z "$HEALTH" ]; then
     echo "  ✗ daemon not responding at $URL"
-    exit 0
+    echo "  hint: bash scripts/am-daemon.sh status"
+    exit 1
 fi
 echo "$HEALTH" | python3 -c "
 import sys, json
@@ -102,15 +127,21 @@ print(f'  sampled: LLM={llm} synthetic={syn} unknown={unk}')
 PYEOF
 echo
 
-# 5. Recent log
+# 5. Recent log (append-only Route-1 path)
 echo "── Recent daemon activity ──"
 LATEST=""
-for f in /tmp/daemon-*.log; do
+if [ -f "$LOG_FILE" ]; then
+    LATEST="$LOG_FILE"
+else
+  for f in /tmp/daemon-*.log; do
     if [ -f "$f" ] && [ -z "$LATEST" -o "$f" -nt "$LATEST" ]; then
         LATEST="$f"
     fi
-done
+  done
+fi
 if [ -n "$LATEST" ]; then
     echo "  from $LATEST:"
-    tail -5 "$LATEST" | grep -vE '^│|^├|^◇|^●|^$' | sed 's/^/    /'
+    tail -5 "$LATEST" | grep -vE '^│|^├|^◇|^●|^$' | sed 's/^/    /' || true
+else
+    echo "  (no log at $LOG_FILE — use scripts/am-daemon.sh start)"
 fi

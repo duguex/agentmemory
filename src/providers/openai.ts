@@ -112,7 +112,9 @@ export class OpenAIProvider implements MemoryProvider {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)));
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 250 * 2 ** (attempt - 1));
+        await promise;
       }
       try {
         const result = await this.attemptCall(url, body);
@@ -120,15 +122,16 @@ export class OpenAIProvider implements MemoryProvider {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const msg = lastError.message;
+        // Timeouts are NOT retriable (matches comment above). Retrying a
+        // slow Ollama/OpenAI call multiplies wall time under concurrency=1
+        // and starves the compress queue. Transient network codes still retry.
         const retriable =
-          /timeout|timed out|429|5\d\d|fetch failed|ECONNRESET|ENOTFOUND/i.test(
-            msg,
-          );
+          /429|5\d\d|fetch failed|ECONNRESET|ENOTFOUND/i.test(msg);
         if (!retriable) throw lastError;
         // otherwise loop and retry
       }
     }
-    throw lastError ?? new Error("OpenAI call failed without an error");
+    throw lastError!;
   }
 
   /**

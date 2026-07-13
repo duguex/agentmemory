@@ -105,7 +105,19 @@ export function registerObserveFunction(
         ) {
           raw.toolName = d["tool_name"] as string | undefined;
           raw.toolInput = d["tool_input"];
-          raw.toolOutput = d["tool_output"] || d["error"];
+          // Prefer tool_output; only fall back to error when output is absent.
+          // `||` wrongly rewrites empty-string successes (grep no-match) and
+          // can replace real empty output with a deprecation warning string.
+          const toolOutput = d["tool_output"];
+          if (toolOutput !== undefined && toolOutput !== null) {
+            raw.toolOutput = toolOutput;
+          } else if ("error" in d && d["error"] != null) {
+            raw.toolOutput = d["error"];
+          }
+        } else if (typeof d["tool_name"] === "string" && d["tool_name"].trim().length > 0) {
+          // Lifecycle / non-post_tool payloads (agent_start, subagent_start, …)
+          // often only carry tool_name. Map it so hasRealContent can keep them.
+          raw.toolName = d["tool_name"] as string;
         }
         if (payload.hookType === "prompt_submit") {
           raw.userPrompt = d["prompt"] as string | undefined;
@@ -305,20 +317,12 @@ export function registerObserveFunction(
           });
         }
 
-        // Step 1: Write the observation.
-        // - AUTO_COMPRESS=true: write raw so mem::compress can read full tool
-        //   data and produce meaningful titles. BM25/vector index will be
-        //   updated when compress writes the compressed version.
-        // - AUTO_COMPRESS=false: write a synthetic placeholder so search has
-        //   something to match against immediately (fast path, no LLM spend).
-        if (isAutoCompressEnabled()) {
-          // Keep raw on disk. Search index won't have this until LLM upgrades
-          // it, but for AUTO_COMPRESS=true users that's the right tradeoff
-          // (quality over immediate-search availability).
-          await kv.set(KV.observations(payload.sessionId), obsId, raw);
-          // Skip search-index add and vector-index add here — they're done
-          // in mem::compress's LLM writeback path with the compressed version.
-        } else {
+        // Observation write strategy:
+        // - AUTO_COMPRESS=true: raw already written above; do not re-set
+        //   (avoids race with mem::evict between two identical writes).
+        // - AUTO_COMPRESS=false: overwrite with synthetic placeholder so
+        //   search has something immediately (fast path, no LLM spend).
+        if (!isAutoCompressEnabled()) {
           // Existing fast path: synthetic placeholder for immediate search.
           const synthetic = buildSyntheticCompression(raw);
           await kv.set(KV.observations(payload.sessionId), obsId, synthetic);

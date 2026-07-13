@@ -6,6 +6,9 @@
  * so the same file loads in both runtimes without compile-time deps.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { CircuitBreaker } from "./circuit-breaker.js";
 
@@ -17,13 +20,58 @@ interface ExtensionAPI {
 }
 
 // ── Env vars (read at runtime, not module load time) ──────────
+// #70: process.env alone misses secrets that only live in
+// ~/.agentmemory/.env (daemon loads that file; omp does not). Fall
+// back so inject/health work when users only configured the daemon.
+
+let cachedFileEnv: Record<string, string> | null = null;
+
+function loadAgentmemoryFileEnv(): Record<string, string> {
+	if (cachedFileEnv) return cachedFileEnv;
+	const out: Record<string, string> = {};
+	const p = join(homedir(), ".agentmemory", ".env");
+	try {
+		if (!existsSync(p)) {
+			cachedFileEnv = out;
+			return out;
+		}
+		for (const line of readFileSync(p, "utf-8").split("\n")) {
+			const t = line.trim();
+			if (!t || t.startsWith("#")) continue;
+			const eq = t.indexOf("=");
+			if (eq <= 0) continue;
+			const key = t.slice(0, eq).trim();
+			let val = t.slice(eq + 1).trim();
+			if (
+				(val.startsWith('"') && val.endsWith('"')) ||
+				(val.startsWith("'") && val.endsWith("'"))
+			) {
+				val = val.slice(1, -1);
+			}
+			out[key] = val;
+		}
+	} catch {
+		// ignore unreadable env
+	}
+	cachedFileEnv = out;
+	return out;
+}
+
+function envOrFile(key: string): string | undefined {
+	const fromProc = process.env[key];
+	if (fromProc !== undefined && fromProc !== "") return fromProc;
+	const fromFile = loadAgentmemoryFileEnv()[key];
+	return fromFile !== undefined && fromFile !== "" ? fromFile : undefined;
+}
+
 function baseUrl(): string {
-	return process.env.AGENTMEMORY_URL ?? "http://localhost:3111";
+	return envOrFile("AGENTMEMORY_URL") ?? "http://localhost:3111";
 }
 
 function secret(): string {
-	return process.env.AGENTMEMORY_SECRET ?? "";
+	return envOrFile("AGENTMEMORY_SECRET") ?? "";
 }
+
 
 // #29: plaintext-bearer warn was originally called at module load
 // time. The runtime version in authHeaders() is more accurate (it
@@ -130,6 +178,7 @@ async function apiGet<T>(path: string): Promise<T | null> {
 
 // P2-014: handle max<=0 and UTF-16 surrogate pairs
 function truncate(s: string, max: number): string {
+	if (typeof s !== "string") return "";
 	if (max <= 0) return "";
 	if (s.length <= max) return s;
 	let end = max;
@@ -160,6 +209,7 @@ function getText(content: unknown): string {
 // and serialize their message + stack so failures are searchable in
 // the corpus. Otherwise fall back to plain JSON.stringify.
 function stringifyResult(result: unknown): string {
+	if (result === undefined || result === null) return "";
 	if (result instanceof Error) {
 		const out: Record<string, string> = {
 			name: result.name,
@@ -169,7 +219,8 @@ function stringifyResult(result: unknown): string {
 		return JSON.stringify(out);
 	}
 	try {
-		return JSON.stringify(result);
+		// JSON.stringify(undefined) returns undefined (not a string).
+		return JSON.stringify(result) ?? "";
 	} catch {
 		// Circular ref or BigInt — fall back to a string repr.
 		return String(result);
@@ -190,13 +241,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// Prevent recursive observation in subagents that inherit this extension
 	if (isSdkChild()) return;
 	let sessionId = `auto-${Date.now().toString(36)}`;
-	// #21: currentProject was set once at session start and never
-	// refreshed. When the user `cd`s into a different directory mid-
-	// session, every subsequent hook reported the stale project.
-	// resolveProject() re-reads cwd on every call so it tracks the
-	// user's current working directory. AGENTMEMORY_PROJECT_NAME env
-	// var still wins for explicit overrides.
-	let currentProject = process.cwd();
+	// #21: do not pin project at session start — resolveProject() re-reads
+	// cwd on every call so mid-session `cd` is reflected correctly.
 	function resolveProject(): string {
 		return process.env.AGENTMEMORY_PROJECT_NAME || process.cwd();
 	}
@@ -290,9 +336,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async () => {
 		sessionId = `auto-${Date.now().toString(36)}`;
-		// #21: don't pin currentProject here — resolveProject() reads
-		// cwd on every call so cd mid-session is tracked.
-		currentProject = resolveProject();
+		// #21: resolveProject() reads cwd on every call so cd mid-session is tracked.
 		sessionInjected = false;
 		// P1-011: single HTTP call, no separate health check
 		const project = resolveProject();
@@ -395,7 +439,10 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		if (!(serverOk || (await ensureServerOk())) || !event || typeof event !== "object") return;
 		const rawName = "toolName" in event ? event.toolName : undefined;
 		const toolName = (typeof rawName === "string" && rawName.length > 0) ? rawName : "unknown";
-		const toolInput = "input" in event ? JSON.stringify(event.input) : "";
+		const toolInput =
+			"input" in event && event.input !== undefined && event.input !== null
+				? JSON.stringify(event.input) ?? ""
+				: "";
 		void apiPost("observe", {
 			hookType: "pre_tool_use",
 			sessionId,
@@ -415,7 +462,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 		// Error.message and .stack are non-enumerable. Detect Error
 		// instances and serialize their message + stack explicitly so
 		// failures are searchable in the corpus.
-		const toolResult = "result" in event ? stringifyResult(event.result) : "";
+		const toolResult =
+			"result" in event ? stringifyResult(event.result) : "";
 		const isError = "isError" in event ? !!event.isError : false;
 		void apiPost("observe", {
 			hookType: isError ? "post_tool_failure" : "post_tool_use",
@@ -430,24 +478,46 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 	// ── Memory injection via before_agent_start (P1-006: gated by AGENTMEMORY_INJECT_CONTEXT) ─
 
 	pi.on("before_agent_start", async (event: unknown) => {
-		if (!(serverOk || (await ensureServerOk())) || sessionInjected || !event || typeof event !== "object") return;
-		if (!isInjectContextEnabled()) return;
-		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) return;
+		const dbgOn = process.env.AGENTMEMORY_INJECT_DEBUG === "true";
+		const dbg = (m: string) => {
+			if (dbgOn) console.error(`[agentmemory:inject] ${m}`);
+		};
+		// Check inject gate before health probe (#70: avoid silent skip).
+		if (!isInjectContextEnabled()) {
+			dbg("skip: INJECT_CONTEXT not true");
+			return;
+		}
+		if (sessionInjected || !event || typeof event !== "object") {
+			dbg(`skip early sessionInjected=${sessionInjected}`);
+			return;
+		}
+		if (!(serverOk || (await ensureServerOk()))) {
+			// #70: visible without DEBUG — once per agent start path
+			console.warn(
+				"[agentmemory] inject skipped: daemon health failed (check AGENTMEMORY_URL / AGENTMEMORY_SECRET in omp env or ~/.agentmemory/.env; set AGENTMEMORY_INJECT_DEBUG=true for detail)",
+			);
+			dbg("skip: serverOk false after ensureServerOk");
+			return;
+		}
+		if (!("prompt" in event) || typeof event.prompt !== "string" || !event.prompt) {
+			dbg("skip: no prompt on event");
+			return;
+		}
+		dbg(`search query len=${event.prompt.length}`);
 		const result = await apiPost<{ results?: Array<{ title?: string; type?: string; narrative?: string }> }>(
 			"search",
 			{ query: event.prompt, limit: 5, format: "narrative" },
 		);
-		if (!result?.results?.length) return;
+		if (!result?.results?.length) {
+			dbg(`skip: empty search result=${result === null ? "null" : "no results"}`);
+			return;
+		}
 		sessionInjected = true;
 		const lines = result.results.map(
 			(r) => `  [${r.type ?? "memory"}] ${r.title ?? ""}${r.narrative ? ` — ${r.narrative}` : ""}`,
 		);
 		const recallBlock = `## Recalled from memory\n${lines.join("\n")}`;
-		// #25: when systemPrompt is "" (or whitespace-only), use the
-		// recall block directly. Without the trim, we'd produce
-		// "\n\n## Recalled..." as the entire system prompt, which
-		// becomes just whitespace + section header — useless for the
-		// agent.
+		dbg(`inject ok lines=${lines.length}`);
 		const existing = ("systemPrompt" in event && typeof event.systemPrompt === "string")
 			? event.systemPrompt.trim()
 			: "";
