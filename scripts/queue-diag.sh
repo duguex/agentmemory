@@ -210,6 +210,22 @@ for m in ms:
   print("  · %s size≈%sGB" % (name, size))
 ' || echo "  (ollama unreachable)"
 
+
+echo
+echo "${BOLD}── Zombie compress jobs on disk (#72) ──${RST}"
+RECONCILE="$(cd "$(dirname "$0")" && pwd)/queue-reconcile.py"
+ROOT_GUESS="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$RECONCILE" ]; then
+  if python3 "$RECONCILE" --check --root "${AGENTMEMORY_ROOT:-$ROOT_GUESS}" 2>/dev/null; then
+    :
+  else
+    rc=$?
+    echo "  (check exit=$rc — repair: stop daemon, python3 scripts/queue-reconcile.py --repair, start, --reenqueue)"
+  fi
+else
+  echo "  (queue-reconcile.py missing)"
+fi
+
 echo
 echo "${BOLD}── Recent compress.diag / errors (log) ──${RST}"
 if [ -z "$LOG_FILE" ]; then
@@ -228,6 +244,8 @@ echo "${BOLD}── Grep cheatsheet ──${RST}"
 echo "  rg 'compress.diag' ${LOG_FILE:-LOG}"
 echo "  rg '\"reason\":' ${LOG_FILE:-LOG}   # orphan_observation|parse_failed|llm_unavailable|..."
 echo "  bash scripts/trace-obs.sh <sessionId> <observationId>"
+echo "  python3 scripts/queue-reconcile.py --check     # zombie already_llm/orphan on disk (#72)"
+echo "  python3 scripts/queue-reconcile.py --repair    # offline purge dead + stash needs_work"
 echo "  python3 scripts/drain-dlq.py          # snapshot then discard DLQ"
 echo
 echo "${DIM}done.${RST}"

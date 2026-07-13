@@ -23,7 +23,7 @@ workers:
           file_path: ./data/queue_store
       queue_configs:
         "mem::compress":
-          concurrency: 1
+          concurrency: 2
           max_retries: 3
           backoff_ms: 2000
           message_group_field: observationId

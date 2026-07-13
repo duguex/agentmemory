@@ -89,6 +89,23 @@
   - 诊断: `queue-diag.sh`；重放优先 redrive；`drain-dlq.py` 仅归因后使用。
 - **状态**: 可见性已修；历史 DLQ 需人工 redrive/drain。
 
+### 6b. compress depth 钉在 ~90：durable queue 不投递/不 reclaim — **启动自愈默认开**
+
+- **症状**: `mem::compress` depth 长期平台（如 ~90–100），`dlq=0`，偶有 success；从几百掉到平台后不空。
+- **根因（已验证）**:
+  1. **不是** skip 逻辑不 ACK：对已 `llm` 的 obs 重新入队，consumer 数秒内 depth→0（`already_llm` skip 正常出队）。
+  2. **是** iii 0.11.2 `file_based` 队列里消息长期停在 durable `active`、**attempts=0 从未被消费**（崩溃/半死/粘连 claim 无 visibility reclaim）。重启也不一定 reclaim。
+  3. 其中大量条目已是 `already_llm` / orphan，占 depth，看起来像 fail-requeue 或 ingress≈egress。
+- **严重度**: 中。
+- **修法 (2026-07-14, #72)**:
+  - **默认** `am-daemon start`：`--check` 失败或 trailing garbage → 自动 **safe reclaim**（不是清空队列）。
+    - 只丢 **already_llm** 的 *queue job*（obs 已在 state 里压缩完）。
+    - **needs_work / orphan 保留** job 文件，清 garbage、reset attempts、重建 active list 以便重新投递。
+    - **corrupt** 进 `.quarantine/`（完整 backup 在 `data/backups/`），不静默扔掉。
+    - 关自愈：`AGENTMEMORY_QUEUE_REPAIR_ON_START=0`。
+  - 诊断：`queue-reconcile.py --check`、`queue-diag.sh`、`health` 对 zombie 比例 **exit 1**。
+  - 引擎层真正 reclaim 需 iii 升级；本仓库在 pin 0.11.2 下做 **投递层自愈**。
+
 ### 7. Query expansion 加 +40% 延迟但精度中性
 
 - **症状**: 接上 `mem::expand-query` 后, benchmark 延迟从

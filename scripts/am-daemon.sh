@@ -129,7 +129,8 @@ except Exception:
   return 0
 }
 
-# Queue / DLQ visibility (#69). Exit 1 if any tracked topic has dlq_depth>0.
+# Queue / DLQ visibility (#69) + backlog stall + zombie jobs (#72).
+# Exit 1 if any tracked topic has dlq_depth>0, stall, or zombie ratio high.
 queue_health() {
   local iii_bin="${III_BIN:-$AGENTMEMORY_HOME/bin/iii}"
   if [[ ! -x "$iii_bin" ]]; then
@@ -137,6 +138,7 @@ queue_health() {
     return 0
   fi
   local bad=0 line topic depth dlq
+  local compress_depth="?"
   for topic in "mem::compress" "mem::graph-extract"; do
     line=$("$iii_bin" trigger --function-id engine::queue::topic_stats \
       --payload "{\"topic\":\"$topic\"}" 2>/dev/null || true)
@@ -148,6 +150,9 @@ except Exception: print("?")' 2>/dev/null || echo "?")
 try:
  d=json.load(sys.stdin); print(d.get("dlq_depth",0))
 except Exception: print("?")' 2>/dev/null || echo "?")
+    if [[ "$topic" == "mem::compress" ]]; then
+      compress_depth=$depth
+    fi
     if [[ "$dlq" =~ ^[0-9]+$ ]] && [[ "$dlq" -gt 0 ]]; then
       echo "queue: $topic depth=${depth} dlq=${dlq}  (DLQ non-zero — failures not healthy; see scripts/queue-diag.sh)"
       bad=1
@@ -155,6 +160,44 @@ except Exception: print("?")' 2>/dev/null || echo "?")
       echo "queue: $topic depth=${depth} dlq=${dlq}"
     fi
   done
+
+  # #72: zombie jobs on disk (already_llm / orphan / corrupt occupying durable queue)
+  local reconcile="${AGENTMEMORY_ROOT}/scripts/queue-reconcile.py"
+  if [[ -f "$reconcile" && -d "${AGENTMEMORY_ROOT}/data/queue_store" ]]; then
+    local zjson zrc
+    zjson=$(python3 "$reconcile" --check --json --root "$AGENTMEMORY_ROOT" 2>/dev/null) && zrc=0 || zrc=$?
+    if [[ -n "$zjson" ]]; then
+      python3 -c 'import sys,json
+d=json.load(sys.stdin)
+s=d.get("summary") or {}
+print("queue: compress jobs_on_disk=%s dead=%s needs_work=%s zombie_ratio=%.2f active_list=%s" % (
+  s.get("total"), s.get("dead"), s.get("needs_work"), float(s.get("zombie_ratio") or 0),
+  d.get("active_list_len")))
+if not d.get("ok", True):
+  print("queue: ZOMBIE BACKLOG — already_llm/orphan/corrupt dominating disk queue; run: python3 scripts/queue-reconcile.py --check  [#72]")
+  sys.exit(1)
+' <<<"$zjson" || bad=1
+    fi
+  fi
+
+  # #72: depth can sit flat when live observe ≈ compress drain OR zombies hold depth.
+  local log_file="${LOG_FILE:-$AGENTMEMORY_HOME/logs/daemon.log}"
+  if [[ -f "$log_file" && "$compress_depth" =~ ^[0-9]+$ ]] && [[ "$compress_depth" -ge 20 ]]; then
+    local age_s last_line
+    last_line=$(rg "compress\.diag success" "$log_file" 2>/dev/null | tail -1 || true)
+    if [[ -z "$last_line" ]]; then
+      echo "queue: compress backlog depth=${compress_depth} but no compress.diag success in log (possible stall) [#72]"
+      bad=1
+    else
+      age_s=$(( $(date +%s) - $(stat -c %Y "$log_file") ))
+      if [[ "$age_s" -gt 120 ]]; then
+        echo "queue: compress depth=${compress_depth}; daemon log quiet ${age_s}s (no recent writes — check LLM hang / gate) [#72]"
+        bad=1
+      else
+        echo "queue: compress depth=${compress_depth} — if flat for hours: check zombie ratio above first; else ingress≈egress. See issue #72."
+      fi
+    fi
+  fi
   return $bad
 }
 
@@ -206,6 +249,26 @@ cmd_start() {
     return 1
   fi
 
+  # #72: reclaim stuck durable compress jobs while engine is down.
+  # Default ON — disable with AGENTMEMORY_QUEUE_REPAIR_ON_START=0.
+  # Root issue is iii file_based active list not reclaiming; skip-path itself ACKs when delivered.
+  local reconcile="${AGENTMEMORY_ROOT}/scripts/queue-reconcile.py"
+  local repair_on="${AGENTMEMORY_QUEUE_REPAIR_ON_START:-1}"
+  if [[ "$repair_on" != "0" && -f "$reconcile" && -d "${AGENTMEMORY_ROOT}/data/queue_store" ]]; then
+    if ! python3 "$reconcile" --check --root "$AGENTMEMORY_ROOT" >/dev/null 2>&1; then
+      log "start: queue zombie/stuck detected — auto queue-reconcile --repair (#72)"
+      python3 "$reconcile" --repair --root "$AGENTMEMORY_ROOT" || log "start: queue-reconcile --repair exited $?"
+    else
+      # Even if ratio thresholds pass, strip corrupt trailing bytes / rewrite clean lists when garbage present
+      local gcount
+      gcount=$(python3 "$reconcile" --check --json --root "$AGENTMEMORY_ROOT" 2>/dev/null | python3 -c 'import sys,json;print((json.load(sys.stdin).get("summary") or {}).get("trailing_garbage") or 0)' 2>/dev/null || echo 0)
+      if [[ "$gcount" =~ ^[0-9]+$ ]] && [[ "$gcount" -gt 0 ]]; then
+        log "start: queue job trailing_garbage=$gcount — auto --repair (#72)"
+        python3 "$reconcile" --repair --root "$AGENTMEMORY_ROOT" || log "start: queue-reconcile --repair exited $?"
+      fi
+    fi
+  fi
+
   rotate_log_if_needed
   {
     echo ""
@@ -226,6 +289,11 @@ cmd_start() {
     if true_health >/dev/null 2>&1; then
       log "start: healthy after ${i}s"
       true_health
+      # safe_reclaim keeps job files — --reenqueue no-ops to avoid duplicates.
+      if [[ -f "${AGENTMEMORY_ROOT}/data/queue_store/.reconcile-needs-work.json" && -f "$reconcile" ]]; then
+        log "start: queue-reconcile --reenqueue (no-op if safe_reclaim kept jobs)"
+        python3 "$reconcile" --reenqueue --root "$AGENTMEMORY_ROOT" || log "start: reenqueue exited $? (failed items kept in manifest)"
+      fi
       return 0
     fi
     sleep 1
