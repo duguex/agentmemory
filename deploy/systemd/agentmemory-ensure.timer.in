@@ -1,0 +1,12 @@
+# Rendered user timer template for periodic health repair.
+[Unit]
+Description=agentmemory health ensure every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=agentmemory-ensure.service
+
+[Install]
+WantedBy=timers.target

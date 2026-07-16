@@ -356,12 +356,22 @@ cmd_ensure() {
     return 0
   fi
   log "ensure: unhealthy — restarting"
-  if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet agentmemory.service 2>/dev/null; then
-    log "ensure: via systemctl --user restart agentmemory"
-    systemctl --user restart agentmemory.service
-    sleep 5
-    true_health
-    return $?
+  if command -v systemctl >/dev/null 2>&1; then
+    # An installed unit may be inactive after a stop or failed boot. Check
+    # LoadState rather than is-active so systemd can start it in its own cgroup.
+    local load_state
+    load_state=$(systemctl --user show agentmemory.service --property=LoadState --value 2>/dev/null || true)
+    if [[ "$load_state" == "loaded" ]]; then
+      log "ensure: via systemctl --user restart agentmemory"
+      systemctl --user restart agentmemory.service
+      sleep 5
+      true_health
+      return $?
+    fi
+  fi
+  if [[ -n "${INVOCATION_ID:-}" ]]; then
+    err "ensure: agentmemory.service is not loaded; refusing background restart from systemd"
+    return 1
   fi
   cmd_restart
 }

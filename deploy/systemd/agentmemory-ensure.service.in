@@ -1,0 +1,18 @@
+# Rendered user oneshot template for health repair.
+# The script refuses to background a daemon when invoked by systemd and
+# delegates to the installed agentmemory.service when that unit is loadable.
+[Unit]
+Description=agentmemory ensure (heal half-dead engine/worker)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@AGENTMEMORY_ROOT@
+Environment=HOME=%h
+Environment=PATH=@AGENTMEMORY_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+Environment=AGENTMEMORY_SUPERVISED=1
+Environment=AGENTMEMORY_SYSTEMD_ENSURE=1
+ExecStart=/bin/bash @AGENTMEMORY_ROOT@/scripts/am-daemon.sh ensure
+KillMode=control-group
+TimeoutStartSec=60s
+TimeoutStopSec=30s

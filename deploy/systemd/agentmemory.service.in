@@ -1,0 +1,28 @@
+# Rendered user service template for the supervised agentmemory process owner.
+# Replace @AGENTMEMORY_ROOT@, @AGENTMEMORY_BIN@, and @AGENTMEMORY_BIN_DIR@
+# with `scripts/install-systemd.sh` before installing.
+[Unit]
+Description=agentmemory — persistent memory for AI coding agents (supervised)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@AGENTMEMORY_ROOT@
+Environment=HOME=%h
+Environment=PATH=@AGENTMEMORY_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+Environment=AGENTMEMORY_SUPERVISED=1
+Environment=AGENTMEMORY_III_CONFIG=@AGENTMEMORY_ROOT@/iii-config.supervised.yaml
+Environment=AGENTMEMORY_VERBOSE=1
+EnvironmentFile=-%h/.agentmemory/.env
+ExecStartPre=-/bin/bash @AGENTMEMORY_ROOT@/scripts/am-daemon.sh stop
+ExecStart=@AGENTMEMORY_BIN@ --verbose
+ExecStop=/bin/bash @AGENTMEMORY_ROOT@/scripts/am-daemon.sh stop
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+StandardOutput=append:%h/.agentmemory/logs/daemon.log
+StandardError=append:%h/.agentmemory/logs/daemon.log
+
+[Install]
+WantedBy=default.target
