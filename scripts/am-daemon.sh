@@ -77,11 +77,32 @@ list_tree_pids() {
   pgrep -f 'node dist/index\.mjs|node .*/@agentmemory/agentmemory/dist/index|node .*/agentmemory/dist/index' 2>/dev/null || true
 }
 
+health_curl_timeout() {
+  local requested="$1" deadline="${2:-}"
+  if [[ "$deadline" =~ ^[0-9]+$ ]]; then
+    local remaining=$((deadline - SECONDS))
+    if (( remaining < 1 )); then
+      return 1
+    fi
+    if (( remaining < requested )); then
+      requested=$remaining
+    fi
+  fi
+  printf '%s\n' "$requested"
+}
+
 true_health() {
   # Process/worker liveness only (used by ensure — must NOT fail solely on DLQ
   # or ensure will reboot forever without draining dead letters). See #69.
+  local deadline="${1:-}"
   local live health workers has_cli has_iii has_worker
-  live=$(curl -fsS -m 3 "${AGENTMEMORY_URL}/agentmemory/livez" 2>/dev/null || true)
+  local live_timeout health_timeout
+
+  if ! live_timeout=$(health_curl_timeout 3 "$deadline"); then
+    echo "health: check deadline reached"
+    return 1
+  fi
+  live=$(curl -fsS -m "$live_timeout" "${AGENTMEMORY_URL}/agentmemory/livez" 2>/dev/null || true)
   if [[ "$live" != *ok* && "$live" != *true* && "$live" != *\"status\"* ]]; then
     if [[ -z "$live" ]]; then
       echo "livez: unreachable"
@@ -89,7 +110,11 @@ true_health() {
     fi
   fi
 
-  health=$(curl -fsS -m 5 "${AGENTMEMORY_URL}/agentmemory/health" \
+  if ! health_timeout=$(health_curl_timeout 5 "$deadline"); then
+    echo "health: check deadline reached"
+    return 1
+  fi
+  health=$(curl -fsS -m "$health_timeout" "${AGENTMEMORY_URL}/agentmemory/health" \
     -H "Authorization: Bearer ${SECRET}" 2>/dev/null || true)
   if [[ -z "$health" ]]; then
     echo "health: unreachable"
@@ -353,15 +378,19 @@ wait_for_true_health() {
   local wait_seconds="${AGENTMEMORY_ENSURE_WAIT_SECONDS:-45}"
   [[ "$wait_seconds" =~ ^[0-9]+$ ]] || wait_seconds=45
   local deadline=$((SECONDS + wait_seconds))
-  local out
+  local out="health: wait deadline reached"
   while (( SECONDS < deadline )); do
-    if out=$(true_health 2>&1); then
+    if out=$(true_health "$deadline" 2>&1); then
       printf '%s\n' "$out"
       return 0
     fi
+    if (( SECONDS >= deadline )); then
+      break
+    fi
     sleep 1
   done
-  true_health
+  printf '%s\n' "$out"
+  return 1
 }
 
 cmd_ensure() {

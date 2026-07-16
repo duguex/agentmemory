@@ -13,10 +13,14 @@ bash scripts/am-daemon.sh health    # 仅 true-health，exit 0/1
 
 日志：**只追加** `~/.agentmemory/logs/daemon.log`（超 20MB 滚动保留 5 份）。
 
-可选 systemd（user）：
+可选 systemd（user）：从 checkout 根目录执行 installer，先生成版本化 unit，再启用 service/timer。
 
 ```bash
-systemctl --user daemon-reload
+# 若 `agentmemory` 不在 PATH，显式指定其绝对路径。
+AGENTMEMORY_BIN=/path/to/agentmemory bash scripts/install-systemd.sh
+# PATH 中已有 agentmemory 时可省略 AGENTMEMORY_BIN。
+bash scripts/install-systemd.sh
+
 systemctl --user enable --now agentmemory.service
 systemctl --user enable --now agentmemory-ensure.timer   # 每 2 分钟 ensure
 ```

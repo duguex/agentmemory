@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  existsSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +31,7 @@ function runEnsure(
   mode: "inactive-installed" | "unit-not-found",
   invokedBySystemd = false,
   healthDelayChecks = 0,
+  waitSeconds = "45",
 ) {
   const home = mkdtempSync(join(tmpdir(), "agentmemory-ensure-test-"));
   temporaryDirectories.push(home);
@@ -146,6 +148,7 @@ exit 0
       MANUAL_STARTED: manualStarted,
       HEALTH_CHECKS: healthChecks,
       HEALTH_DELAY_CHECKS: String(healthDelayChecks),
+      AGENTMEMORY_ENSURE_WAIT_SECONDS: waitSeconds,
       AGENTMEMORY_LOG: agentmemoryLog,
     },
     encoding: "utf8",
@@ -156,6 +159,7 @@ exit 0
     result,
     systemctlLog: readFileSync(systemctlLog, "utf8"),
     agentmemoryLog: readFileSync(agentmemoryLog, "utf8"),
+    healthChecks: existsSync(healthChecks) ? readFileSync(healthChecks, "utf8") : "",
   };
 }
 
@@ -170,6 +174,13 @@ describe("am-daemon ensure systemd ownership", () => {
       `systemctl=${systemctlLog} agentmemory=${agentmemoryLog} stdout=${result.stdout}`,
     ).toContain("restart agentmemory.service");
     expect(agentmemoryLog).toBe("");
+  });
+
+  it("does not probe again after the ensure deadline", () => {
+    const { result, healthChecks } = runEnsure("inactive-installed", false, 0, "0");
+
+    expect(result.status).not.toBe(0);
+    expect(healthChecks).toBe("");
   });
 
   it("falls back to manual restart when the service unit is not installed", () => {
