@@ -9,10 +9,10 @@ After=network.target
 Type=oneshot
 WorkingDirectory=@AGENTMEMORY_ROOT@
 Environment=HOME=%h
-Environment=PATH=@AGENTMEMORY_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+Environment="PATH=@AGENTMEMORY_BIN_DIR@:/usr/local/bin:/usr/bin:/bin"
 Environment=AGENTMEMORY_SUPERVISED=1
 Environment=AGENTMEMORY_SYSTEMD_ENSURE=1
-ExecStart=/bin/bash @AGENTMEMORY_ROOT@/scripts/am-daemon.sh ensure
+ExecStart=/usr/bin/env "AGENTMEMORY_ROOT=@AGENTMEMORY_ROOT@" "AGENTMEMORY_SYSTEMD_ENSURE=1" /bin/bash "@AGENTMEMORY_ROOT@/scripts/am-daemon.sh" ensure
 KillMode=control-group
-TimeoutStartSec=60s
+TimeoutStartSec=90s
 TimeoutStopSec=30s

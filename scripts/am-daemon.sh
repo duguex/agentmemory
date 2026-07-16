@@ -349,6 +349,21 @@ cmd_status() {
   return $rc
 }
 
+wait_for_true_health() {
+  local wait_seconds="${AGENTMEMORY_ENSURE_WAIT_SECONDS:-45}"
+  [[ "$wait_seconds" =~ ^[0-9]+$ ]] || wait_seconds=45
+  local deadline=$((SECONDS + wait_seconds))
+  local out
+  while (( SECONDS < deadline )); do
+    if out=$(true_health 2>&1); then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    sleep 1
+  done
+  true_health
+}
+
 cmd_ensure() {
   # Process liveness only — do not restart on DLQ alone (#69).
   if true_health >/dev/null 2>&1; then
@@ -364,8 +379,7 @@ cmd_ensure() {
     if [[ "$load_state" == "loaded" ]]; then
       log "ensure: via systemctl --user restart agentmemory"
       systemctl --user restart agentmemory.service
-      sleep 5
-      true_health
+      wait_for_true_health
       return $?
     fi
   fi

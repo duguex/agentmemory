@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -26,15 +27,19 @@ function writeExecutable(path: string, content: string): void {
   chmodSync(path, 0o755);
 }
 
-function installUnits() {
+function installUnits(useSpacedPaths = false) {
   const home = mkdtempSync(join(tmpdir(), "agentmemory-systemd-template-test-"));
   temporaryDirectories.push(home);
-  const fakeBin = join(home, "bin");
+  const fakeBin = join(home, useSpacedPaths ? "bin with spaces" : "bin");
+  const fakeRoot = useSpacedPaths ? join(home, "checkout with spaces") : ROOT;
   const outputDir = join(home, "systemd", "user");
   const systemctlLog = join(home, "systemctl.log");
   const fakeAgentmemory = join(fakeBin, "agentmemory");
   mkdirSync(fakeBin, { recursive: true });
-  writeFileSync(systemctlLog, "", "utf8");
+  if (useSpacedPaths) {
+    cpSync(join(ROOT, "deploy"), join(fakeRoot, "deploy"), { recursive: true });
+    writeFileSync(join(fakeRoot, "iii-config.supervised.yaml"), "", "utf8");
+  }
   writeExecutable(
     join(fakeBin, "systemctl"),
     `#!/usr/bin/env bash
@@ -47,9 +52,8 @@ printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
     cwd: ROOT,
     env: {
       ...process.env,
-      HOME: home,
+      AGENTMEMORY_ROOT: fakeRoot,
       PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-      AGENTMEMORY_ROOT: ROOT,
       AGENTMEMORY_BIN: fakeAgentmemory,
       AGENTMEMORY_SYSTEMD_UNIT_DIR: outputDir,
       SYSTEMCTL_LOG: systemctlLog,
@@ -83,13 +87,49 @@ describe("versioned systemd deployment", () => {
     expect(service).toContain("Type=simple");
     expect(service).toContain("KillMode=control-group");
     expect(service).toContain("Restart=always");
-    expect(service).toContain("ExecStart=");
-    expect(service).toContain("agentmemory --verbose");
-    expect(ensure).toContain("Type=oneshot");
-    expect(ensure).toContain("TimeoutStartSec=60s");
-    expect(ensure).toContain("am-daemon.sh ensure");
+    const execStart = service.split("\n").find((line) => line.startsWith("ExecStart="));
+    expect(execStart).toBeDefined();
+    expect(execStart).toContain("AGENTMEMORY_SUPERVISED=1");
+    expect(execStart).toContain("AGENTMEMORY_III_CONFIG=");
+    expect(execStart).toContain("AGENTMEMORY_VERBOSE=1");
+    expect(service).toContain("EnvironmentFile=-%h/.agentmemory/.env");
+    expect(ensure).toContain('am-daemon.sh" ensure');
+    expect(ensure).toContain("TimeoutStartSec=90s");
     expect(timer).toContain("OnUnitActiveSec=2min");
     expect(timer).toContain("Unit=agentmemory-ensure.service");
     expect(systemctlLog).toContain("--user daemon-reload");
+  });
+
+  it("quotes checkout and binary paths accepted by systemd", () => {
+    const { result, outputDir } = installUnits(true);
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    const units = [
+      join(outputDir, "agentmemory.service"),
+      join(outputDir, "agentmemory-ensure.service"),
+      join(outputDir, "agentmemory-ensure.timer"),
+    ];
+    const service = readFileSync(units[0], "utf8");
+    const ensure = readFileSync(units[1], "utf8");
+    expect(service).toContain("WorkingDirectory=");
+    expect(service).toContain("checkout with spaces");
+    expect(service).toContain('Environment="PATH=');
+    expect(service).toContain('ExecStart=/usr/bin/env ');
+    expect(ensure).toContain("WorkingDirectory=");
+    expect(ensure).toContain("checkout with spaces");
+
+    const hasSystemdAnalyze = spawnSync("sh", ["-c", "command -v systemd-analyze"], {
+      encoding: "utf8",
+    }).status === 0;
+    if (hasSystemdAnalyze) {
+      const verification = spawnSync("systemd-analyze", ["verify", ...units], {
+        encoding: "utf8",
+      });
+
+      expect(
+        verification.status,
+        verification.stderr || verification.stdout,
+      ).toBe(0);
+    }
   });
 });

@@ -20,6 +20,23 @@ if [[ ! -f "$ROOT/iii-config.supervised.yaml" ]]; then
 fi
 
 BIN_DIR="$(dirname "$BIN")"
+ROOT="$(cd "$ROOT" && pwd -P)"
+BIN="$(cd "$(dirname "$BIN")" && pwd -P)/$(basename "$BIN")"
+BIN_DIR="$(dirname "$BIN")"
+
+escape_systemd_quoted() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//"/\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+ROOT_ESCAPED="$(escape_systemd_quoted "$ROOT")"
+BIN_ESCAPED="$(escape_systemd_quoted "$BIN")"
+BIN_DIR_ESCAPED="$(escape_systemd_quoted "$BIN_DIR")"
 TEMPLATE_DIR="$ROOT/deploy/systemd"
 mkdir -p "$UNIT_DIR"
 
@@ -28,9 +45,9 @@ render_unit() {
   local destination="$2"
   local content
   content="$(cat "$template")"
-  content="${content//@AGENTMEMORY_ROOT@/$ROOT}"
-  content="${content//@AGENTMEMORY_BIN@/$BIN}"
-  content="${content//@AGENTMEMORY_BIN_DIR@/$BIN_DIR}"
+  content="${content//@AGENTMEMORY_ROOT@/$ROOT_ESCAPED}"
+  content="${content//@AGENTMEMORY_BIN@/$BIN_ESCAPED}"
+  content="${content//@AGENTMEMORY_BIN_DIR@/$BIN_DIR_ESCAPED}"
   printf '%s\n' "$content" > "$destination"
   chmod 0644 "$destination"
 }

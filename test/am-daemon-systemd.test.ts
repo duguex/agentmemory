@@ -29,6 +29,7 @@ function writeExecutable(path: string, content: string): void {
 function runEnsure(
   mode: "inactive-installed" | "unit-not-found",
   invokedBySystemd = false,
+  healthDelayChecks = 0,
 ) {
   const home = mkdtempSync(join(tmpdir(), "agentmemory-ensure-test-"));
   temporaryDirectories.push(home);
@@ -39,6 +40,7 @@ function runEnsure(
   const agentmemoryLog = join(state, "agentmemory.log");
   const systemctlRestarted = join(state, "systemctl-restarted");
   const manualStarted = join(state, "manual-started");
+  const healthChecks = join(state, "health-checks");
 
   mkdirSync(fakeBin, { recursive: true });
   mkdirSync(join(fakeRoot, "dist"), { recursive: true });
@@ -78,12 +80,27 @@ exit 0
     `#!/usr/bin/env bash
 set -u
 if [[ ! -e "$SYSTEMCTL_RESTARTED" && ! -e "$MANUAL_STARTED" ]]; then
+  for _ in {1..20}; do
+    [[ -e "$SYSTEMCTL_RESTARTED" || -e "$MANUAL_STARTED" ]] && break
+    /bin/sleep 0.01
+  done
+fi
+if [[ ! -e "$SYSTEMCTL_RESTARTED" && ! -e "$MANUAL_STARTED" ]]; then
   exit 7
 fi
+if [[ -n "\${HEALTH_DELAY_CHECKS:-}" && -e "$SYSTEMCTL_RESTARTED" ]]; then
+  checks=0
+  [[ -f "$HEALTH_CHECKS" ]] && checks=$(cat "$HEALTH_CHECKS")
+  checks=$((checks + 1))
+  printf '%s\n' "$checks" > "$HEALTH_CHECKS"
+  if (( checks <= HEALTH_DELAY_CHECKS )); then
+    exit 7
+  fi
+fi
 if [[ "$*" == *"/agentmemory/livez"* ]]; then
-  printf '{"status":"ok"}\\n'
+  printf '{"status":"ok"}\n'
 else
-  printf '{"health":{"workers":[{"pid":123}]}}\\n'
+  printf '{"health":{"workers":[{"pid":123}]}}\n'
 fi
 `,
   );
@@ -127,6 +144,8 @@ exit 0
       INVOCATION_ID: invokedBySystemd ? "test-invocation" : "",
       SYSTEMCTL_RESTARTED: systemctlRestarted,
       MANUAL_STARTED: manualStarted,
+      HEALTH_CHECKS: healthChecks,
+      HEALTH_DELAY_CHECKS: String(healthDelayChecks),
       AGENTMEMORY_LOG: agentmemoryLog,
     },
     encoding: "utf8",
@@ -141,8 +160,8 @@ exit 0
 }
 
 describe("am-daemon ensure systemd ownership", () => {
-  it("restarts an installed but inactive service instead of backgrounding a daemon", () => {
-    const { result, systemctlLog, agentmemoryLog } = runEnsure("inactive-installed", true);
+  it("restarts an installed but inactive service and waits for delayed health", () => {
+    const { result, systemctlLog, agentmemoryLog } = runEnsure("inactive-installed", true, 3);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(systemctlLog).toContain("show agentmemory.service");
