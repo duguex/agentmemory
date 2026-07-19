@@ -12,9 +12,11 @@ This tool reclaims stuck disk jobs while the engine is stopped (or with
 Modes:
   --check      read-only classify; exit 1 when zombie ratio exceeds threshold
                or stale unlisted needs_work jobs are detected
-  --repair     backup queue_store, drop dead jobs, stash needs_work,
-               rebuild waiting list, clear compress active list
-  --reenqueue  POST needs_work from sidecar manifest (after start)
+  --repair     backup queue_store, drop confirmed-dead jobs,
+               preserve needs_work/orphan in native format;
+               does NOT write _queue_lists.bin
+  --reenqueue  POST needs_work from manifest, then cleanup old
+               job files after compression verified
 
 Env:
   AGENTMEMORY_ROOT   package checkout (default: parent of scripts/)
@@ -77,7 +79,11 @@ def trailing_garbage(raw: bytes) -> bool:
     j = raw.rfind(b"}")
     if j < 0:
         return True
-    # allow trailing whitespace only (binary after JSON is corruption)
+    # Engine-native files may include rkyv framing bytes after the JSON.
+    # We detect trailing non-whitespace bytes but do NOT automatically
+    # classify them as corruption requiring repair — the engine's own
+    # serialization format is unverified.  parse_json_blob already strips
+    # them during classification.  Flagged for informational diagnostics only.
     return bool(raw[j + 1 :].strip(b" \t\r\n"))
 
 
@@ -418,15 +424,16 @@ def cmd_repair(
     allow_live: bool,
     as_json: bool,
 ) -> int:
-    """Safe reclaim (default).
+    """Safe reclaim (read-only audit of job files; only deletes confirmed-dead).
 
-    Does NOT silently drop work:
-    - already_llm: remove queue job only (obs already compressed in state)
-    - needs_work / orphan: keep on disk, clean rewrite, reset attempts, rebuild waiting list
-    - corrupt: quarantine under .quarantine/ (still in backup); never unlink without quarantine
+    Does NOT write _queue_lists.bin or rewrite job files — engine
+    serialization format is unverified.  This tool:
+    - already_llm: DELETE job file only (observation already in KV)
+    - needs_work / orphan: KEEP untouched; record in manifest
+    - corrupt: quarantine under .quarantine/
 
-    needs_work is never deleted pending a separate reenqueue path.
-    """
+    needs_work recovery: POST /agentmemory/compress for each pair in
+    manifest, then delete old job files after compression verified."""
     live = engine_up(url, secret)
     if live and not allow_live:
         msg = (
@@ -455,9 +462,8 @@ def cmd_repair(
     dropped_llm = 0
     kept = 0
     quarantined = 0
-    cleaned = 0
-    kept_ids: list[str] = []
     needs_manifest: list[dict[str, str]] = []
+    unrecoverable = 0
 
     for cj in jobs:
         p = Path(cj.path)
@@ -476,22 +482,12 @@ def cmd_repair(
             dropped_llm += 1
             continue
 
-        # needs_work or orphan: KEEP — rewrite clean for redelivery (orphan → consumer skip-ACK)
-        try:
-            raw = p.read_bytes()
-            job = unwrap_job(parse_json_blob(raw))
-        except Exception:
-            dest = quarantine / f"{p.name}.{now_ms}"
-            shutil.move(str(p), str(dest))
-            quarantined += 1
-            continue
-
-        write_clean_job(p, job, now_ms)
-        cleaned += 1
+        # needs_work or orphan: KEEP as-is (engine-native format unverified).
+        # Do NOT rewrite (would strip framing bytes).
+        # Do NOT modify _queue_lists.bin.
+        # Record in manifest for API-based recovery.
         kept += 1
-        jid = str(job.get("id") or cj.job_id)
-        if jid:
-            kept_ids.append(jid)
+        jid = str(cj.job_id or "")
         if cj.session_id and cj.observation_id:
             needs_manifest.append(
                 {
@@ -501,13 +497,11 @@ def cmd_repair(
                     "status": cj.status,
                 }
             )
+        else:
+            unrecoverable += 1
 
-    # Rebuild compress delivery lists; preserve graph and unrelated queue keys.
-    lists = load_lists(queue_dir)
-    lists[COMPRESS_WAITING_KEY] = kept_ids
-    lists[COMPRESS_ACTIVE_KEY] = []
-    write_lists(queue_dir, lists)
-    write_sorted_sets_clean(queue_dir)
+    # Do NOT write _queue_lists.bin or _queue_sorted_sets.bin —
+    # engine serialization format is unverified.
 
     # Manifest is audit + optional reenqueue helper; jobs already on disk for kept work.
     manifest = {
@@ -517,17 +511,19 @@ def cmd_repair(
         "summary_before": summary,
         "dropped_already_llm": dropped_llm,
         "quarantined_corrupt": quarantined,
-        "kept_redeliver": kept,
+        "preserved_jobs": kept,
+        "unrecoverable": unrecoverable,
         "needs_work": needs_manifest,
         "note": (
-            "needs_work/orphan job files were KEPT and cleaned for redelivery; "
-            "only already_llm jobs removed; corrupt moved to .quarantine/"
+            "needs_work/orphan job files were KEPT in native format; "
+            "only already_llm jobs removed; corrupt moved to .quarantine/; "
+            "recover via --reenqueue (POSTs /agentmemory/compress; orphan entries safely skip-ACK)"
         ),
     }
     manifest_path = queue_dir / MANIFEST_NAME
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 
-    # Live path: do not delete kept files; optional reenqueue would DUPLICATE — skip.
+    # Audit manifest; needs_work preserved in native format for API recovery.
     out = {
         "ok": True,
         "mode": "safe_reclaim",
@@ -535,13 +531,11 @@ def cmd_repair(
         "summary_before": summary,
         "dropped_already_llm": dropped_llm,
         "quarantined_corrupt": quarantined,
-        "kept_redeliver": kept,
-        "cleaned_rewrites": cleaned,
-        "waiting_list_len": len(kept_ids),
-        "active_list_len": 0,
+        "preserved_jobs": kept,
+        "unrecoverable": unrecoverable,
         "manifest": str(manifest_path),
-        "silent_drop_risk": "none_for_needs_work",
-        "next": "start engine — kept jobs should drain; corrupt in data/queue_store/.quarantine/",
+        "silent_drop_risk": "unrecoverable" if unrecoverable > 0 else "none_for_needs_work",
+        "next": "recover via --reenqueue (POSTs /agentmemory/compress per entry)",
     }
     if as_json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
@@ -549,21 +543,22 @@ def cmd_repair(
         print("═══ queue-reconcile --repair (safe reclaim) ═══")
         print(f"  backup:              {bak}")
         print(f"  before:              {summary}")
-        print(f"  dropped_already_llm: {dropped_llm}  (obs already compressed — job only)")
-        print(f"  quarantined_corrupt: {quarantined}  → {quarantine}")
-        print(f"  kept_redeliver:      {kept}  (needs_work+orphan cleaned, not deleted)")
-        print(f"  waiting_list:       {len(kept_ids)}")
-        print("  active_list:        0")
+        print(f"  dropped_already_llm: {dropped_llm}")
+        print(f"  quarantined_corrupt: {quarantined}")
+        print(f"  preserved_jobs:     {kept}  (untouched native format)")
+        if unrecoverable > 0:
+            print(f"  unrecoverable:      {unrecoverable}  (missing sessionId/observationId in job payload)")
+        print(f"  manifest:            {manifest_path}")
         print(f"  next:                {out['next']}")
     return 0
 
 
 def cmd_reenqueue(queue_dir: Path, url: str, secret: str, as_json: bool) -> int:
-    """Optional: re-POST needs_work from manifest.
+    """POST needs_work from manifest for API-based recovery.
 
-    Safe repair already keeps job files; use this only if active list was wiped
-    and jobs were intentionally removed. Failed items stay in the manifest.
-    """
+    Safe for all manifest modes including safe_reclaim.  Sends
+    /agentmemory/compress for each entry; failed items stay in manifest
+    for retry.  On full success, renames manifest to .done."""
     manifest_path = queue_dir / MANIFEST_NAME
     if not manifest_path.is_file():
         msg = f"no manifest at {manifest_path} (run --repair first)"
@@ -580,27 +575,45 @@ def cmd_reenqueue(queue_dir: Path, url: str, secret: str, as_json: bool) -> int:
             print(f"ERROR: {msg}", file=sys.stderr)
         return 2
 
+    # Verify we can parse the engine's list format before proceeding.
+    # load_lists returns {} on failure, so check the raw file first.
+    lists_path = queue_dir / "_queue_lists.bin"
+    if lists_path.is_file():
+        try:
+            parse_json_blob(lists_path.read_bytes())
+        except Exception:
+            msg = "cannot parse _queue_lists.bin — refuse to reenqueue without delivery-list filter"
+            if as_json:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(f"ERROR: {msg}", file=sys.stderr)
+            return 2
+
     manifest = json.loads(manifest_path.read_text())
-    # safe_reclaim keeps files on disk — reenqueue would duplicate. Refuse unless forced via remaining-only.
-    if manifest.get("mode") == "safe_reclaim" and int(manifest.get("kept_redeliver") or 0) > 0:
-        msg = (
-            "manifest mode=safe_reclaim with kept jobs on disk — skip --reenqueue "
-            "to avoid duplicate compress requests (consumer will drain kept files)"
-        )
-        if as_json:
-            print(json.dumps({"ok": True, "skipped": True, "reason": msg}))
-        else:
-            print(f"skip: {msg}")
-        return 0
+    # Filter: skip items whose jobId is currently in engine delivery lists
+    delivery_ids: set[str] = set()
+    lists = load_lists(queue_dir)
+    for key_kind in (COMPRESS_WAITING_KEY, COMPRESS_ACTIVE_KEY):
+        for jid in (lists.get(key_kind) or []):
+            if isinstance(jid, str):
+                delivery_ids.add(jid)
 
     items = list(manifest.get("needs_work") or [])
+    to_enqueue: list[dict[str, str]] = []
+    for item in items:
+        if item.get("jobId") in delivery_ids:
+            continue  # skip: already in engine delivery list
+        to_enqueue.append(item)
+
     ok = fail = 0
     errors = []
-    remaining = []
-    for item in items:
+    remaining: list[dict[str, str]] = []
+    enqueued_ok_items: list[dict[str, str]] = []
+    for item in to_enqueue:
         r = enqueue_compress(url, secret, item["sessionId"], item["observationId"])
         if isinstance(r, dict) and not r.get("error"):
             ok += 1
+            enqueued_ok_items.append(item)
         else:
             fail += 1
             remaining.append(item)
@@ -608,12 +621,70 @@ def cmd_reenqueue(queue_dir: Path, url: str, secret: str, as_json: bool) -> int:
                 errors.append({"item": item, "error": r})
         time.sleep(0.02)
 
-    if remaining:
-        # Keep failed items for retry — do NOT rename away successful-only progress
-        manifest["needs_work"] = remaining
+    # Items in delivery lists: keep in manifest (not reenqueued, not dropped)
+    # Post-reenqueue: verify compression and clean up old job files.
+    # Each successfully-enqueued item is checked once; confirmed llm
+    # old files are deleted.  Unconfirmed items stay in manifest.
+    def _clean_old_file(jid: str) -> bool:
+        """Delete the old compress job file for the given jobId. Returns True if deleted."""
+        if not jid or "/" in jid or ".." in jid or "\\" in jid:
+            return False
+        path = queue_dir / f"queue%3A__fn_queue%3A%3Amem%3A%3Acompress%3Ajobs%3A{jid}.bin"
+        if path.is_file():
+            path.unlink()
+            return True
+        return False
+
+    pending = []
+    cleaned = 0
+    if ok > 0:
+        for item in enqueued_ok_items:
+            jid = item.get("jobId", "")
+            is_orphan = item.get("status") == "orphan"
+
+            if not jid:
+                pending.append(item)
+                continue
+
+            if is_orphan:
+                if _clean_old_file(jid):
+                    cleaned += 1
+                else:
+                    pending.append(item)
+                continue
+
+            # needs_work: verify compressionKind=llm before deleting
+            oid = item["observationId"]
+            sid = item["sessionId"]
+            try:
+                req_url = f"{url.rstrip('/')}/agentmemory/observations?sessionId={sid}"
+                req = urllib.request.Request(
+                    req_url, headers={"Authorization": f"Bearer {secret}"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    obs_data = json.loads(r.read())
+                    found_llm = False
+                    for o in obs_data.get("observations", []):
+                        if o.get("id") == oid:
+                            found_llm = o.get("compressionKind") == "llm"
+                            break
+                    if found_llm and _clean_old_file(jid):
+                        cleaned += 1
+                    else:
+                        pending.append(item)
+            except Exception:
+                pending.append(item)
+    # Items in delivery lists: unchanged (not reenqueued, not cleaned)
+    for item in items:
+        if item.get("jobId") in delivery_ids:
+            pending.append(item)
+
+    if pending or remaining:
+        manifest["needs_work"] = pending + remaining
         manifest["last_reenqueue_at"] = datetime.now(timezone.utc).isoformat()
         manifest["last_reenqueue_ok"] = ok
         manifest["last_reenqueue_fail"] = fail
+        manifest["cleaned_old_files"] = cleaned
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
         done = None
     else:
@@ -621,22 +692,23 @@ def cmd_reenqueue(queue_dir: Path, url: str, secret: str, as_json: bool) -> int:
         manifest_path.rename(done)
 
     out = {
-        "ok": fail == 0,
+        "ok": fail == 0 and not pending and not remaining,
         "enqueued_ok": ok,
         "fail": fail,
-        "remaining": len(remaining),
-        "manifest": str(manifest_path if remaining else done),
+        "cleaned_old_files": cleaned,
+        "remaining": len(pending) + len(remaining),
+        "manifest": str(manifest_path if not done else done),
         "errors": errors,
     }
     if as_json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
     else:
         print("═══ queue-reconcile --reenqueue ═══")
-        print(f"  ok={ok} fail={fail} remaining={len(remaining)} manifest→{out['manifest']}")
+        print(f"  ok={ok} fail={fail} cleaned={cleaned} remaining={out['remaining']}")
+        print(f"  manifest→{out['manifest']}")
         for e in errors:
             print(f"  err: {e}")
-    return 0 if fail == 0 else 1
-
+    return 0 if out["ok"] else 1
 
 def resolve_paths(root: Path) -> tuple[Path, Path]:
     return root / "data" / "queue_store", root / "data" / "state_store.db"
@@ -645,9 +717,9 @@ def resolve_paths(root: Path) -> tuple[Path, Path]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true", help="classify only; exit 1 on zombie thresholds")
-    mode.add_argument("--repair", action="store_true", help="backup + drop dead + stash needs_work")
-    mode.add_argument("--reenqueue", action="store_true", help="POST stashed needs_work to /agentmemory/compress")
+    mode.add_argument("--check", action="store_true", help="classify; exit 1 on zombie ratio or stale unlisted")
+    mode.add_argument("--repair", action="store_true", help="backup + drop already_llm; preserve rest (audit-only)")
+    mode.add_argument("--reenqueue", action="store_true", help="POST manifest entries; verify+cleanup old files")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--allow-live", action="store_true", help="allow --repair while engine is up (risky)")
     ap.add_argument("--root", type=Path, default=Path(os.environ.get("AGENTMEMORY_ROOT", DEFAULT_ROOT)))

@@ -283,14 +283,6 @@ cmd_start() {
     if ! python3 "$reconcile" --check --root "$AGENTMEMORY_ROOT" >/dev/null 2>&1; then
       log "start: queue zombie/stuck detected — auto queue-reconcile --repair (#72)"
       python3 "$reconcile" --repair --root "$AGENTMEMORY_ROOT" || log "start: queue-reconcile --repair exited $?"
-    else
-      # Even if ratio thresholds pass, strip corrupt trailing bytes / rewrite clean lists when garbage present
-      local gcount
-      gcount=$(python3 "$reconcile" --check --json --root "$AGENTMEMORY_ROOT" 2>/dev/null | python3 -c 'import sys,json;print((json.load(sys.stdin).get("summary") or {}).get("trailing_garbage") or 0)' 2>/dev/null || echo 0)
-      if [[ "$gcount" =~ ^[0-9]+$ ]] && [[ "$gcount" -gt 0 ]]; then
-        log "start: queue job trailing_garbage=$gcount — auto --repair (#72)"
-        python3 "$reconcile" --repair --root "$AGENTMEMORY_ROOT" || log "start: queue-reconcile --repair exited $?"
-      fi
     fi
   fi
 
