@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,7 @@ def make_job_bytes(
     attempts: int = 0,
     created_at: int = 1_700_000_000_000,
     garbage: bool = False,
+    process_at: int | None = None,
 ) -> bytes:
     job = {
         "": {
@@ -41,7 +43,7 @@ def make_job_bytes(
             "function_id": "mem::compress",
             "id": job_id,
             "max_attempts": 3,
-            "process_at": created_at,
+            "process_at": process_at if process_at is not None else created_at,
             "queue": "__fn_queue::mem::compress",
         }
     }
@@ -142,9 +144,19 @@ class ClassifyTests(unittest.TestCase):
             bad.write_bytes(b"\xff\xfe not json")
 
             (q / "_queue_lists.bin").write_bytes(
-                json.dumps({qr.COMPRESS_ACTIVE_KEY: ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"]}).encode()
+                json.dumps({
+                    qr.COMPRESS_ACTIVE_KEY: ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                    "queue:__fn_queue::mem::graph-extract:waiting": ["graph-waiting"],
+                    "queue:__fn_queue::mem::graph-extract:active": ["graph-active"],
+                    "queue:unrelated": ["keep-me"],
+                }).encode()
             )
-            (q / "_queue_sorted_sets.bin").write_bytes(b"{}\xff\xff")
+            (q / "_queue_sorted_sets.bin").write_bytes(
+                (json.dumps({
+                    "queue:unrelated:schedule": {"score": 123},
+                    "opaque:schedule": {"score": 456},
+                }) + "\xff\xff").encode()
+            )
 
             rc = qr.cmd_repair(
                 q,
@@ -168,11 +180,73 @@ class ClassifyTests(unittest.TestCase):
             self.assertEqual(oids, {"obs_none1", "obs_missing"})
             self.assertTrue(any((q / ".quarantine").iterdir()))
             lists = qr.load_lists(q)
-            self.assertEqual(len(lists.get(qr.COMPRESS_ACTIVE_KEY) or []), 2)
-            self.assertEqual((q / "_queue_sorted_sets.bin").read_bytes(), b"{}")
+            waiting = lists.get("queue:__fn_queue::mem::compress:waiting") or []
+            self.assertEqual(set(waiting), {
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            })
+            self.assertEqual(lists.get(qr.COMPRESS_ACTIVE_KEY) or [], [])
+            self.assertEqual(lists.get("queue:__fn_queue::mem::graph-extract:waiting"), ["graph-waiting"])
+            self.assertEqual(lists.get("queue:__fn_queue::mem::graph-extract:active"), ["graph-active"])
+            self.assertEqual(lists.get("queue:unrelated"), ["keep-me"])
+            sorted_sets = json.loads((q / "_queue_sorted_sets.bin").read_bytes())
+            self.assertEqual(sorted_sets, {
+                "queue:unrelated:schedule": {"score": 123},
+                "opaque:schedule": {"score": 456},
+            })
             manifest = json.loads((q / qr.MANIFEST_NAME).read_text())
             self.assertEqual(manifest.get("mode"), "safe_reclaim")
             self.assertEqual(manifest.get("dropped_already_llm"), 1)
+
+    def test_check_flags_unlisted_needs_work_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            q = root / "data" / "queue_store"
+            s = root / "data" / "state_store.db"
+            q.mkdir(parents=True)
+            s.mkdir(parents=True)
+            write_obs(s, "sess1", [{"observationId": "obs_none1", "compressionKind": "none"}])
+            job = q / "queue%3A__fn_queue%3A%3Amem%3A%3Acompress%3Ajobs%3Ajob1.bin"
+            job.write_bytes(make_job_bytes("job1", "obs_none1", "sess1"))
+            (q / "_queue_lists.bin").write_bytes(json.dumps({}).encode())
+
+            self.assertEqual(qr.cmd_check(q, s, min_jobs=10, zombie_ratio=0.4, as_json=True), 1)
+
+    def test_check_allows_fresh_unlisted_needs_work_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            q = root / "data" / "queue_store"
+            s = root / "data" / "state_store.db"
+            q.mkdir(parents=True)
+            s.mkdir(parents=True)
+            write_obs(s, "sess1", [{"observationId": "obs_none1", "compressionKind": "none"}])
+            job = q / "queue%3A__fn_queue%3A%3Amem%3A%3Acompress%3Ajobs%3Ajob1.bin"
+            now = int(time.time() * 1000)
+            job.write_bytes(make_job_bytes("job1", "obs_none1", "sess1", created_at=now))
+            (q / "_queue_lists.bin").write_bytes(json.dumps({}).encode())
+
+            self.assertEqual(qr.cmd_check(q, s, min_jobs=10, zombie_ratio=0.4, as_json=True), 0)
+
+    def test_check_allows_recently_rewritten_unlisted_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            q = root / "data" / "queue_store"
+            s = root / "data" / "state_store.db"
+            q.mkdir(parents=True)
+            s.mkdir(parents=True)
+            write_obs(s, "sess1", [{"observationId": "obs_none1", "compressionKind": "none"}])
+            job = q / "queue%3A__fn_queue%3A%3Amem%3A%3Acompress%3Ajobs%3Ajob1.bin"
+            now = int(time.time() * 1000)
+            job.write_bytes(make_job_bytes(
+                "job1",
+                "obs_none1",
+                "sess1",
+                created_at=1_700_000_000_000,
+                process_at=now,
+            ))
+            (q / "_queue_lists.bin").write_bytes(json.dumps({}).encode())
+
+            self.assertEqual(qr.cmd_check(q, s, min_jobs=10, zombie_ratio=0.4, as_json=True), 0)
 
 
 if __name__ == "__main__":

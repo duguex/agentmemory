@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Detect and repair stuck mem::compress queue (#72).
 
-Root cause (verified): iii 0.11.2 file_based queue can leave messages in the
-durable `active` list never delivered (attempts_made=0 for hours/days). When
-a consumer *does* run `mem::compress`, skip paths (already_llm / orphan)
-ACK correctly within seconds — the app skip logic is fine.
+Observational finding: stale needs_work jobs (attempts_made=0) have been
+observed outside the waiting/active lists after engine restart; the consumer
+path for these aged jobs is under investigation (iii 0.11.2).
 
 This tool reclaims stuck disk jobs while the engine is stopped (or with
 --allow-live), and is invoked by default from `am-daemon start` when
 --check fails (disable: AGENTMEMORY_QUEUE_REPAIR_ON_START=0).
 
 Modes:
-  --check      read-only classify; exit 1 when zombie ratio/thresholds trip
-  --repair     backup queue_store, drop dead jobs, stash needs_work, clear
-               compress active list; if daemon up + --allow-live, re-enqueue
+  --check      read-only classify; exit 1 when zombie ratio exceeds threshold
+               or stale unlisted needs_work jobs are detected
+  --repair     backup queue_store, drop dead jobs, stash needs_work,
+               rebuild waiting list, clear compress active list
   --reenqueue  POST needs_work from sidecar manifest (after start)
 
 Env:
@@ -44,8 +44,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR.parent
 
 COMPRESS_ACTIVE_KEY = "queue:__fn_queue::mem::compress:active"
+COMPRESS_WAITING_KEY = "queue:__fn_queue::mem::compress:waiting"
 GRAPH_ACTIVE_KEY = "queue:__fn_queue::mem::graph-extract:active"
 MANIFEST_NAME = ".reconcile-needs-work.json"
+UNLISTED_NEEDS_WORK_GRACE_SECONDS = 300
 
 
 @dataclass
@@ -59,6 +61,7 @@ class ClassifiedJob:
     compression_kind: str | None
     age_hours: float | None
     trailing_garbage: bool
+    process_at_ms: int | None = None
 
 
 def parse_json_blob(raw: bytes) -> Any:
@@ -144,6 +147,8 @@ def classify_job(
     jid = str(job.get("id") or "")
     attempts = int(job.get("attempts_made") or 0)
     created = job.get("created_at")
+    process_at = job.get("process_at")
+    process_at_ms = int(process_at) if isinstance(process_at, (int, float)) else None
     age_h = None
     if isinstance(created, (int, float)) and created > 0:
         age_h = round((now_ms - float(created)) / 3.6e6, 3)
@@ -182,6 +187,7 @@ def classify_job(
         compression_kind=ck,
         age_hours=age_h,
         trailing_garbage=garbage,
+        process_at_ms=process_at_ms,
     )
 
 
@@ -256,7 +262,17 @@ def write_lists(queue_dir: Path, lists: dict[str, Any]) -> None:
 
 
 def write_sorted_sets_clean(queue_dir: Path) -> None:
-    (queue_dir / "_queue_sorted_sets.bin").write_bytes(b"{}")
+    p = queue_dir / "_queue_sorted_sets.bin"
+    if not p.is_file():
+        p.write_bytes(b"{}")
+        return
+    try:
+        data = parse_json_blob(p.read_bytes())
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    p.write_bytes(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def engine_up(url: str, secret: str, timeout: float = 3.0) -> bool:
@@ -311,19 +327,50 @@ def cmd_check(
     jobs = classify_queue(queue_dir, state_dir)
     summary = summarize(jobs)
     lists = load_lists(queue_dir)
+    waiting = lists.get(COMPRESS_WAITING_KEY) or []
     active = lists.get(COMPRESS_ACTIVE_KEY) or []
+    waiting_ids = set(waiting) if isinstance(waiting, list) else set()
+    active_ids = set(active) if isinstance(active, list) else set()
+    listed_ids = waiting_ids | active_ids
+    waiting_len = len(waiting) if isinstance(waiting, list) else 0
     active_len = len(active) if isinstance(active, list) else 0
+    now_ms = int(time.time() * 1000)
+    grace_ms = UNLISTED_NEEDS_WORK_GRACE_SECONDS * 1000
+    stale_unlisted = [
+        j
+        for j in jobs
+        if j.status == "needs_work"
+        and j.job_id
+        and j.job_id not in listed_ids
+        and (
+            (
+                j.process_at_ms is not None
+                and j.process_at_ms <= now_ms - grace_ms
+            )
+            or (
+                j.process_at_ms is None
+                and j.age_hours > UNLISTED_NEEDS_WORK_GRACE_SECONDS / 3600
+            )
+        )
+    ]
     report = {
-        "ok": not threshold_fail(summary, min_jobs, zombie_ratio),
+        "ok": not threshold_fail(summary, min_jobs, zombie_ratio) and not stale_unlisted,
         "summary": summary,
+        "waiting_list_len": waiting_len,
         "active_list_len": active_len,
-        "thresholds": {"min_jobs": min_jobs, "zombie_ratio": zombie_ratio},
+        "unlisted_needs_work": len(stale_unlisted),
+        "thresholds": {
+            "min_jobs": min_jobs,
+            "zombie_ratio": zombie_ratio,
+            "unlisted_grace_seconds": UNLISTED_NEEDS_WORK_GRACE_SECONDS,
+        },
         "sample_dead": [
             asdict(j)
             for j in jobs
             if j.status in ("already_llm", "orphan", "corrupt")
         ][:8],
         "sample_needs_work": [asdict(j) for j in jobs if j.status == "needs_work"][:8],
+        "sample_unlisted_needs_work": [asdict(j) for j in stale_unlisted[:8]],
     }
     # sticky active with many dead is also a smell even if ratio edge
     if active_len >= min_jobs and summary["dead"] >= min_jobs * zombie_ratio:
@@ -341,9 +388,11 @@ def cmd_check(
         print(f"  needs_work:       {s['needs_work']}")
         print(f"  trailing_garbage: {s['trailing_garbage']}")
         print(f"  age_hours:        {s['age_hours']}")
-        print(f"  active_list_len:  {active_len}")
+        print(f"  waiting_list_len:  {waiting_len}")
+        print(f"  active_list_len:   {active_len}")
+        print(f"  unlisted_needs_work: {len(stale_unlisted)} (grace={UNLISTED_NEEDS_WORK_GRACE_SECONDS}s)")
         print(f"  thresholds:       min_jobs={min_jobs} zombie_ratio>={zombie_ratio}")
-        print(f"  result:           {'OK' if report['ok'] else 'FAIL (zombie backlog)'}")
+        print(f"  result:           {'OK' if report['ok'] else 'FAIL (queue persistence backlog)'}")
         if not report["ok"]:
             print("  hint: stop daemon if needed, then:")
             print("    python3 scripts/queue-reconcile.py --repair")
@@ -373,7 +422,7 @@ def cmd_repair(
 
     Does NOT silently drop work:
     - already_llm: remove queue job only (obs already compressed in state)
-    - needs_work / orphan: keep on disk, clean rewrite, reset attempts, rebuild active list
+    - needs_work / orphan: keep on disk, clean rewrite, reset attempts, rebuild waiting list
     - corrupt: quarantine under .quarantine/ (still in backup); never unlink without quarantine
 
     needs_work is never deleted pending a separate reenqueue path.
@@ -453,22 +502,11 @@ def cmd_repair(
                 }
             )
 
-    # Rebuild active list = kept jobs only (reclaim sticky claims)
+    # Rebuild compress delivery lists; preserve graph and unrelated queue keys.
     lists = load_lists(queue_dir)
-    graph_active = lists.get(GRAPH_ACTIVE_KEY) or []
-    graph_ids: list[str] = []
-    for p in queue_dir.iterdir():
-        if p.is_file() and is_graph_job_file(p.name):
-            name = unquote(p.name)
-            if "jobs:" in name:
-                graph_ids.append(name.split("jobs:")[-1].removesuffix(".bin"))
-    write_lists(
-        queue_dir,
-        {
-            COMPRESS_ACTIVE_KEY: kept_ids,
-            GRAPH_ACTIVE_KEY: graph_ids or (graph_active if isinstance(graph_active, list) else []),
-        },
-    )
+    lists[COMPRESS_WAITING_KEY] = kept_ids
+    lists[COMPRESS_ACTIVE_KEY] = []
+    write_lists(queue_dir, lists)
     write_sorted_sets_clean(queue_dir)
 
     # Manifest is audit + optional reenqueue helper; jobs already on disk for kept work.
@@ -499,7 +537,8 @@ def cmd_repair(
         "quarantined_corrupt": quarantined,
         "kept_redeliver": kept,
         "cleaned_rewrites": cleaned,
-        "active_list_len": len(kept_ids),
+        "waiting_list_len": len(kept_ids),
+        "active_list_len": 0,
         "manifest": str(manifest_path),
         "silent_drop_risk": "none_for_needs_work",
         "next": "start engine — kept jobs should drain; corrupt in data/queue_store/.quarantine/",
@@ -513,7 +552,8 @@ def cmd_repair(
         print(f"  dropped_already_llm: {dropped_llm}  (obs already compressed — job only)")
         print(f"  quarantined_corrupt: {quarantined}  → {quarantine}")
         print(f"  kept_redeliver:      {kept}  (needs_work+orphan cleaned, not deleted)")
-        print(f"  active_list:         {len(kept_ids)}")
+        print(f"  waiting_list:       {len(kept_ids)}")
+        print("  active_list:        0")
         print(f"  next:                {out['next']}")
     return 0
 
